@@ -28,6 +28,11 @@ hiddenimports += [
     "webview.guilib",
     "pythonnet",
     "clr_loader",
+    "tkinter",
+    "tkinter.filedialog",
+    "tkinter.messagebox",
+    "tkinter.font",
+    "tkinter.ttk",
 ]
 
 a = Analysis(
