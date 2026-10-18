@@ -347,11 +347,18 @@ def build_direct_launcher_command(
         raise ValueError("Порт сервера должен быть от 1 до 65535.")
     root = Path(game_root)
     game = root / "gta_sa.exe"
+    multiplayer_dll = find_injected_multiplayer_dll(root)
+    if not game.is_file():
+        raise FileNotFoundError(f"Не найден игровой файл: {game}")
+    if multiplayer_dll is None:
+        raise FileNotFoundError(
+            "Не найдена multiplayer DLL san_andreas_multiplayer.dll в папке клиента."
+        )
     nick = sanitize_nickname(nickname)
     return [
         str(helper),
         "--game", str(game),
-        "--dll", str(root / "multiplayer_c" / "san_andreas_multiplayer.dll"),
+        "--dll", str(multiplayer_dll),
         "--host", host,
         "--port", str(port),
         "--nickname", nick,
@@ -360,12 +367,24 @@ def build_direct_launcher_command(
 
 
 def find_direct_game_client(root: Path) -> Path | None:
-    """Find the executable CR:MP runtime that the browser itself starts."""
+    """Find the CR:MP runtime binary shipped with the client."""
     candidates = (
         root / "multiplayer_c" / "grand_theft_auto_san_andreas.dll",
         root / "grand_theft_auto_san_andreas.dll",
         root / "multiplayer_c" / "grand_theft_auto_san_andreas.exe",
         root / "grand_theft_auto_san_andreas.exe",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def find_injected_multiplayer_dll(root: Path) -> Path | None:
+    """Find the multiplayer DLL loaded into gta_sa.exe by the direct-connect helper."""
+    candidates = (
+        root / "multiplayer_c" / "san_andreas_multiplayer.dll",
+        root / "san_andreas_multiplayer.dll",
     )
     for candidate in candidates:
         if candidate.is_file():
