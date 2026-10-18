@@ -184,10 +184,11 @@ class LauncherTests(unittest.TestCase):
         source = Path(__file__).with_name("direct_launcher.cs").read_text(encoding="utf-8")
         self.assertIn('string game = Path.GetFullPath(options["--game"]);', source)
 
-    def test_direct_helper_does_not_append_an_empty_rcon_password(self):
+    def test_direct_helper_passes_native_connect_arguments(self):
         source = Path(__file__).with_name("direct_launcher.cs").read_text(encoding="utf-8")
-        self.assertIn('" -n " + nickname;', source)
-        self.assertNotIn('" -n " + nickname + " -c"', source)
+        self.assertIn('" -c -n " + Quote(nickname)', source)
+        self.assertIn('" -h " + host + " -p " + port.ToString(CultureInfo.InvariantCulture)', source)
+        self.assertNotIn('host + ":" + port.ToString(CultureInfo.InvariantCulture)', source)
 
     def test_direct_launch_targets_game_and_multiplayer_dll_not_the_browser(self):
         with tempfile.TemporaryDirectory() as temp:
