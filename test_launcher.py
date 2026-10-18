@@ -188,7 +188,7 @@ class LauncherTests(unittest.TestCase):
         source = Path(__file__).with_name("direct_launcher.cs").read_text(encoding="utf-8")
         self.assertIn('" -c -n " + Quote(nickname)', source)
         self.assertIn('" -h " + host + " -p " + port.ToString(CultureInfo.InvariantCulture)', source)
-        self.assertNotIn('host + ":" + port.ToString(CultureInfo.InvariantCulture)', source)
+        self.assertNotIn('Quote(game) + " " + host + ":"', source)
 
     def test_direct_launch_targets_game_and_multiplayer_dll_not_the_browser(self):
         with tempfile.TemporaryDirectory() as temp:
