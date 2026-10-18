@@ -24,3 +24,9 @@ Run tools/update_runtime_manifest.py after changing launcher.py, client_updates.
 ## Release model
 
 GitHub stores the small native bootstrap source and the live UI. A release EXE embeds a known-good fallback copy for first launch/offline startup; subsequent Python module and UI updates are downloaded and verified using the runtime manifest.
+
+## LEDERG PANEL hotkey
+
+With the updated Windows launcher open, press physical **X** while the CR:MP game window is foreground to send `/xpanel`. The server checks the account rank again; rank 13 and server-wide actions are restricted to the reserved LEDERG founder account. `/xpanel` remains available as a manual chat-command fallback.
+
+The launcher fetches verified runtime updates from this repository at startup, so this hotkey update does not require a new EXE build.

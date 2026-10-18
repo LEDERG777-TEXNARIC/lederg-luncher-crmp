@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import shutil
@@ -11,6 +12,7 @@ import traceback
 import urllib.parse
 import webbrowser
 from pathlib import Path
+from ctypes import wintypes
 from tkinter import filedialog
 
 from client_updates import apply_successful_update, fetch_files_manifest, inspect_installation
@@ -44,7 +46,98 @@ DATA_HOME = Path(
 WEB_ROOT = Path(os.environ.get("LEDERG_WEB_ROOT", Path(__file__).resolve().parent / "web"))
 STATE_FILE = DATA_HOME / "install_location.txt"
 NICK_FILE = DATA_HOME / "nickname.txt"
+
 SERVER_FILE = DATA_HOME / "server_address.txt"
+
+VK_X = 0x58
+VK_T = 0x54
+VK_RETURN = 0x0D
+VK_SHIFT = 0x10
+VK_CONTROL = 0x11
+VK_MENU = 0x12
+KEYEVENTF_KEYUP = 0x0002
+X_PANEL_COMMAND = "/xpanel"
+
+
+def should_trigger_xpanel_hotkey(
+    *, key_down: bool, was_down: bool, foreground_pid: int, game_pid: int | None
+) -> bool:
+    """Trigger only on a fresh X press while the exact launched game is foreground."""
+    return bool(
+        key_down
+        and not was_down
+        and game_pid
+        and foreground_pid
+        and foreground_pid == game_pid
+    )
+
+
+def _foreground_process_id() -> tuple[int, int]:
+    """Return (foreground HWND, owning PID), safely returning zero on failure."""
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = int(user32.GetForegroundWindow() or 0)
+        if not hwnd:
+            return 0, 0
+        pid = wintypes.DWORD(0)
+        user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), ctypes.byref(pid))
+        return hwnd, int(pid.value)
+    except Exception:
+        return 0, 0
+
+
+def _send_vk(user32, virtual_key: int, *, key_up: bool = False) -> None:
+    flags = KEYEVENTF_KEYUP if key_up else 0
+    user32.keybd_event(virtual_key, 0, flags, 0)
+
+
+def _send_layout_character(user32, character: str, keyboard_layout) -> bool:
+    """Type one ASCII command character using the game's active keyboard layout."""
+    mapped = int(user32.VkKeyScanExW(character, keyboard_layout))
+    if mapped == -1:
+        return False
+    virtual_key = mapped & 0xFF
+    modifiers = (mapped >> 8) & 0xFF
+    modifier_keys = []
+    if modifiers & 1:
+        modifier_keys.append(VK_SHIFT)
+    if modifiers & 2:
+        modifier_keys.append(VK_CONTROL)
+    if modifiers & 4:
+        modifier_keys.append(VK_MENU)
+    for modifier in modifier_keys:
+        _send_vk(user32, modifier)
+    _send_vk(user32, virtual_key)
+    _send_vk(user32, virtual_key, key_up=True)
+    for modifier in reversed(modifier_keys):
+        _send_vk(user32, modifier, key_up=True)
+    return True
+
+
+def _type_xpanel_command(game_pid: int) -> bool:
+    """Open SA:MP chat and send /xpanel only while our game remains foreground."""
+    hwnd, foreground_pid = _foreground_process_id()
+    if not hwnd or foreground_pid != game_pid:
+        return False
+    user32 = ctypes.windll.user32
+    thread_id = int(user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), None) or 0)
+    keyboard_layout = user32.GetKeyboardLayout(thread_id)
+    # T is a game action key. Allow the game a moment to open its chat input.
+    _send_vk(user32, VK_T)
+    _send_vk(user32, VK_T, key_up=True)
+    time.sleep(0.14)
+    if _foreground_process_id()[1] != game_pid:
+        return False
+    for character in X_PANEL_COMMAND:
+        if not _send_layout_character(user32, character, keyboard_layout):
+            write_launcher_log(
+                f"X hotkey could not map character {character!r} under the game keyboard layout."
+            )
+            return False
+        time.sleep(0.018)
+    _send_vk(user32, VK_RETURN)
+    _send_vk(user32, VK_RETURN, key_up=True)
+    return True
 
 
 class LauncherApi:
@@ -61,6 +154,7 @@ class LauncherApi:
         self._current_file = ""
         self._error = ""
         self._process: subprocess.Popen | None = None
+        self._xpanel_stop: threading.Event | None = None
         self._game_root: Path | None = None
         self._endpoint = f"{SERVER_HOST}:{SERVER_PORT}"
         self._nickname = self._read_text(NICK_FILE, "LEDERG")
@@ -276,6 +370,7 @@ class LauncherApi:
                 self._phase = "ready"
                 self._error = ""
             write_launcher_log(f"Native runtime process started: pid={process.pid}")
+            self._start_xpanel_hotkey(process, root)
             threading.Thread(target=self._monitor_process, args=(process,), daemon=True).start()
             return {"ok": True, "message": f"Клиент запущен; подключаю к {host}:{port}."}
         except Exception as exc:
@@ -286,9 +381,63 @@ class LauncherApi:
                 self._status = "Ошибка запуска клиента."
             return {"ok": False, "message": f"Не удалось запустить CR:MP: {exc}"}
 
+    def _start_xpanel_hotkey(self, process: subprocess.Popen, root: Path) -> None:
+        """Start an X-key watcher tied to this game process; never global-type elsewhere."""
+        previous = self._xpanel_stop
+        if previous is not None:
+            previous.set()
+        stop_event = threading.Event()
+        self._xpanel_stop = stop_event
+        threading.Thread(
+            target=self._watch_xpanel_hotkey,
+            args=(process, root, stop_event),
+            daemon=True,
+            name="LEDERG-X-panel-hotkey",
+        ).start()
+        write_launcher_log(
+            f"X hotkey watcher started for CR:MP PID {process.pid}; "
+            "only sends /xpanel when that exact game process is foreground."
+        )
+
+    def _watch_xpanel_hotkey(
+        self, process: subprocess.Popen, root: Path, stop_event: threading.Event
+    ) -> None:
+        was_down = False
+        try:
+            user32 = ctypes.windll.user32
+            while not stop_event.wait(0.025):
+                if process.poll() is not None:
+                    break
+                key_down = bool(int(user32.GetAsyncKeyState(VK_X)) & 0x8000)
+                _, foreground_pid = _foreground_process_id()
+                if should_trigger_xpanel_hotkey(
+                    key_down=key_down,
+                    was_down=was_down,
+                    foreground_pid=foreground_pid,
+                    game_pid=process.pid,
+                ):
+                    write_launcher_log(
+                        f"Physical X pressed in foreground CR:MP window (pid={process.pid}); "
+                        "sending /xpanel."
+                    )
+                    if not _type_xpanel_command(process.pid):
+                        write_launcher_log(
+                            f"Could not send /xpanel for game pid {process.pid}; "
+                            "use the /xpanel chat command as a fallback."
+                        )
+                was_down = key_down
+        except Exception:
+            write_launcher_log("X hotkey watcher failed: " + traceback.format_exc())
+        finally:
+            if self._xpanel_stop is stop_event:
+                self._xpanel_stop = None
+            write_launcher_log(f"X hotkey watcher stopped for CR:MP PID {process.pid}.")
+
     def _monitor_process(self, process: subprocess.Popen) -> None:
         try:
             code = process.wait()
+            if self._xpanel_stop is not None and self._process is process:
+                self._xpanel_stop.set()
             with self._lock:
                 if self._process is process:
                     self._process = None
