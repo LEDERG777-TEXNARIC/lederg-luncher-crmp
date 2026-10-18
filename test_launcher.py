@@ -16,6 +16,7 @@ from launcher import (
     build_direct_launcher_command,
     build_direct_game_command,
     find_direct_game_client,
+    find_injected_multiplayer_dll,
     download_archive,
     fetch_release_manifest,
     find_client,
@@ -337,6 +338,21 @@ class LauncherTests(unittest.TestCase):
             build_direct_game_command(Path("client.dll"), "bad host", 1130, "LEDERG")
         with self.assertRaises(ValueError):
             build_direct_game_command(Path("client.dll"), "188.127.241.8", 70000, "LEDERG")
+
+    def test_injected_multiplayer_dll_is_found_in_client_folder(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            multiplayer = root / "multiplayer_c"
+            multiplayer.mkdir()
+            dll = multiplayer / "san_andreas_multiplayer.dll"
+            dll.write_bytes(b"MZ")
+            self.assertEqual(find_injected_multiplayer_dll(root), dll)
+
+    def test_web_launcher_uses_direct_helper_instead_of_runtime_dll_command(self):
+        source = Path(__file__).with_name("web_runtime.py").read_text(encoding="utf-8")
+        self.assertIn("command = build_direct_launcher_command(", source)
+        self.assertIn("helper = direct_launcher_path()", source)
+        self.assertNotIn("command = build_direct_game_command(runtime", source)
 
 
 if __name__ == "__main__":
