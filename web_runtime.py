@@ -26,12 +26,13 @@ from launcher import (
     SERVER_PORT,
     SERVER_IP_URL,
     ZIP_URL,
-    build_direct_game_command,
+    build_direct_launcher_command,
+    direct_launcher_path,
     download_archive,
     download_client_folder,
     fetch_release_manifest,
     find_client,
-    find_direct_game_client,
+    find_injected_multiplayer_dll,
     game_root_for,
     load_server_address,
     parse_server_address,
@@ -249,29 +250,30 @@ class LauncherApi:
     def _find_game_root(selected: Path) -> Path | None:
         selected = selected.resolve()
         candidates = [selected, *selected.parents]
-        nested = [
+        candidates.extend([
             selected / "GTA Criminal Russia",
             selected / "GTA Criminal Russia" / "GTA Criminal Russia",
-        ]
-        for candidate in nested:
-            candidates.append(candidate)
+        ])
         for candidate in candidates:
-            if (candidate / "gta_sa.exe").is_file() and find_direct_game_client(candidate):
+            if (candidate / "gta_sa.exe").is_file() and find_injected_multiplayer_dll(candidate):
                 return candidate
-        # Folder dialog users often pick a parent folder. Search only to a small
-        # depth and return the runtime's real game root, never the selected parent.
+        # The folder picker can point at a parent folder. Locate the actual game
+        # root by its game executable and the DLL the direct-connect helper loads.
         try:
-            for runtime in selected.glob("*/multiplayer_c/grand_theft_auto_san_andreas.dll"):
+            for runtime in selected.glob("*/multiplayer_c/san_andreas_multiplayer.dll"):
                 root = runtime.parents[1]
                 if (root / "gta_sa.exe").is_file():
                     return root
-            for runtime in selected.glob("*/grand_theft_auto_san_andreas.dll"):
+            for runtime in selected.glob("*/san_andreas_multiplayer.dll"):
                 root = runtime.parent
                 if (root / "gta_sa.exe").is_file():
                     return root
         except OSError:
             pass
-        return selected if (selected / "gta_sa.exe").is_file() else None
+        return selected if (
+            (selected / "gta_sa.exe").is_file()
+            and find_injected_multiplayer_dll(selected)
+        ) else None
 
     def _refresh_server(self) -> None:
         try:
@@ -285,7 +287,7 @@ class LauncherApi:
         try:
             with self._lock:
                 root = self._game_root
-            if root and find_direct_game_client(root):
+            if root and find_injected_multiplayer_dll(root):
                 with self._lock:
                     self._status = "Клиент готов к запуску."
                     self._progress = 100.0
@@ -313,7 +315,7 @@ class LauncherApi:
             error = self._error
             endpoint = self._endpoint
             nickname = self._nickname
-        runtime = find_direct_game_client(root) if root else None
+        runtime = find_injected_multiplayer_dll(root) if root else None
         browser = find_client(root) if root else None
         client_ready = bool(root and (root / "gta_sa.exe").is_file() and runtime)
         display_path = str(root or selected) if (root or selected) else ""
@@ -393,18 +395,30 @@ class LauncherApi:
             endpoint = self._endpoint
         if not root:
             return {"ok": False, "message": "Не найдена папка игры. Выбери папку или скачай клиент."}
-        runtime = find_direct_game_client(root)
-        if not (root / "gta_sa.exe").is_file() or not runtime:
+        multiplayer_dll = find_injected_multiplayer_dll(root)
+        if not (root / "gta_sa.exe").is_file() or not multiplayer_dll:
             return {
                 "ok": False,
-                "message": "Не найден CR:MP runtime. Нажми «Скачать / восстановить файлы» для проверки клиента.",
+                "message": (
+                    "Не найден gta_sa.exe или san_andreas_multiplayer.dll. "
+                    "Нажми «Скачать / восстановить файлы» для проверки клиента."
+                ),
             }
         try:
+            helper = direct_launcher_path()
+            if not helper.is_file():
+                raise FileNotFoundError(
+                    "Не найден встроенный LEDERG-DirectLaunch.exe. "
+                    "Скачай актуальную сборку лаунчера из GitHub Actions."
+                )
             host, port = parse_server_address(endpoint)
-            command = build_direct_game_command(runtime, host, port, self._nickname)
+            command = build_direct_launcher_command(
+                helper, root, host, port, self._nickname
+            )
             write_launcher_log(
-                f"Native runtime launch: executable={runtime}; cwd={root}; "
-                f"endpoint={host}:{port}; nickname={self._nickname}"
+                f"Direct-connect helper launch: helper={helper}; game={root / 'gta_sa.exe'}; "
+                f"dll={multiplayer_dll}; cwd={root}; endpoint={host}:{port}; "
+                f"nickname={self._nickname}"
             )
             process = subprocess.Popen(
                 command,
@@ -416,20 +430,27 @@ class LauncherApi:
             )
             with self._lock:
                 self._process = process
-                self._status = f"Игровой клиент запущен. PID {process.pid}."
+                self._status = f"Прямой запуск CR:MP; адрес {host}:{port}; PID {process.pid}."
                 self._phase = "ready"
                 self._error = ""
-            write_launcher_log(f"Native runtime process started: pid={process.pid}")
+            write_launcher_log(
+                f"Direct-connect helper started: pid={process.pid}; endpoint={host}:{port}"
+            )
             self._start_xpanel_hotkey(process, root)
-            threading.Thread(target=self._monitor_process, args=(process,), daemon=True).start()
-            return {"ok": True, "message": f"Клиент запущен; подключаю к {host}:{port}."}
+            threading.Thread(
+                target=self._monitor_process, args=(process,), daemon=True
+            ).start()
+            return {
+                "ok": True,
+                "message": f"Запускаю игру напрямую и подключаю к серверу {host}:{port}.",
+            }
         except Exception as exc:
             write_launcher_log(f"ERROR launching game: {traceback.format_exc()}")
             with self._lock:
                 self._phase = "error"
                 self._error = str(exc)
-                self._status = "Ошибка запуска клиента."
-            return {"ok": False, "message": f"Не удалось запустить CR:MP: {exc}"}
+                self._status = "Ошибка прямого запуска клиента."
+            return {"ok": False, "message": f"Не удалось запустить CR:MP напрямую: {exc}"}
 
     def _start_xpanel_hotkey(self, process: subprocess.Popen, root: Path) -> None:
         """Start an X-key watcher tied to this game process; never global-type elsewhere."""
@@ -592,7 +613,7 @@ class LauncherApi:
                         "Проверь, что ZIP содержит папку multiplayer_c и игровой клиент."
                     )
                 root = game_root_for(client)
-                runtime = find_direct_game_client(root)
+                runtime = find_injected_multiplayer_dll(root)
                 if not (root / "gta_sa.exe").is_file() or not runtime:
                     raise RuntimeError(
                         "В архиве не найден игровой runtime grand_theft_auto_san_andreas.dll. "
@@ -639,7 +660,7 @@ class LauncherApi:
                     "Файлы обновлены, но клиент не найден. Проверь манифест и повтори восстановление."
                 )
             root = game_root_for(client)
-            runtime = find_direct_game_client(root)
+            runtime = find_injected_multiplayer_dll(root)
             if not (root / "gta_sa.exe").is_file() or not runtime:
                 raise RuntimeError(
                     "Не найден игровой runtime grand_theft_auto_san_andreas.dll. "
