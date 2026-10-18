@@ -1,0 +1,31 @@
+{
+  "files": [
+    {
+      "path": "client_updates.py",
+      "sha256": "597add7ec9b56a792f0e739a6e350114adde2a14b2a32811ea6086ed83f9fda0",
+      "size": 13451
+    },
+    {
+      "path": "radio_sync.py",
+      "sha256": "52476a1cae3e9ada600d3331cfba79fa4653a84d2354b793c972c78516854a0b",
+      "size": 13893
+    },
+    {
+      "path": "launcher.py",
+      "sha256": "9d3b144c640b3d8e5b9bf1c076fe5af3ef7777d4666a1fdf96ebcad3c6f4e997",
+      "size": 88269
+    },
+    {
+      "path": "web_runtime.py",
+      "sha256": "87d9104e40b18179bc15fd71f49ab15ed8c9f5087eb01c10328d4c43408b6cc8",
+      "size": 22399
+    },
+    {
+      "path": "web/index.html",
+      "sha256": "88e6e6b19e82cb7ec854bb0d0c08ffaa59534279db161ba97744b15f0218ddf3",
+      "size": 20077
+    }
+  ],
+  "schema": 1,
+  "version": "2.0.0"
+}
