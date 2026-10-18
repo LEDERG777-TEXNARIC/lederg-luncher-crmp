@@ -86,6 +86,56 @@ def _foreground_process_id() -> tuple[int, int]:
         return 0, 0
 
 
+def is_game_window_process(image_path: str, game_root: Path) -> bool:
+    """Accept only the two expected game executables inside the selected client root."""
+    if not image_path:
+        return False
+    try:
+        root = os.path.normcase(os.path.abspath(os.fspath(game_root)))
+        image = os.path.normcase(os.path.abspath(image_path))
+        if os.path.commonpath((root, image)) != root:
+            return False
+        return os.path.basename(image).lower() in {
+            "gta_sa.exe",
+            "grand_theft_auto_san_andreas.dll",
+        }
+    except (OSError, ValueError):
+        return False
+
+
+def _process_image_path(process_id: int) -> str:
+    """Read an image path without importing psutil or querying unrelated processes."""
+    if not process_id:
+        return ""
+    kernel32 = ctypes.windll.kernel32
+    process = kernel32.OpenProcess(0x1000, False, int(process_id))  # QUERY_LIMITED_INFORMATION
+    if not process:
+        return ""
+    try:
+        capacity = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(capacity.value)
+        if not kernel32.QueryFullProcessImageNameW(
+            process, 0, buffer, ctypes.byref(capacity)
+        ):
+            return ""
+        return buffer.value
+    except Exception:
+        return ""
+    finally:
+        kernel32.CloseHandle(process)
+
+
+def _foreground_game_process_id(game_root: Path, launched_pid: int) -> int:
+    """Return the game PID only for the launcher process or its known client executable."""
+    _, foreground_pid = _foreground_process_id()
+    if not foreground_pid:
+        return 0
+    if foreground_pid == launched_pid:
+        return foreground_pid
+    image_path = _process_image_path(foreground_pid)
+    return foreground_pid if is_game_window_process(image_path, game_root) else 0
+
+
 def _send_vk(user32, virtual_key: int, *, key_up: bool = False) -> None:
     flags = KEYEVENTF_KEYUP if key_up else 0
     user32.keybd_event(virtual_key, 0, flags, 0)
@@ -409,18 +459,18 @@ class LauncherApi:
                 if process.poll() is not None:
                     break
                 key_down = bool(int(user32.GetAsyncKeyState(VK_X)) & 0x8000)
-                _, foreground_pid = _foreground_process_id()
+                foreground_game_pid = _foreground_game_process_id(root, process.pid)
                 if should_trigger_xpanel_hotkey(
                     key_down=key_down,
                     was_down=was_down,
-                    foreground_pid=foreground_pid,
-                    game_pid=process.pid,
+                    foreground_pid=foreground_game_pid,
+                    game_pid=foreground_game_pid,
                 ):
                     write_launcher_log(
-                        f"Physical X pressed in foreground CR:MP window (pid={process.pid}); "
-                        "sending /xpanel."
+                        f"Physical X pressed in foreground CR:MP window (pid={foreground_game_pid}); "
+                        f"launched runtime pid={process.pid}; sending /xpanel."
                     )
-                    if not _type_xpanel_command(process.pid):
+                    if not _type_xpanel_command(foreground_game_pid):
                         write_launcher_log(
                             f"Could not send /xpanel for game pid {process.pid}; "
                             "use the /xpanel chat command as a fallback."
