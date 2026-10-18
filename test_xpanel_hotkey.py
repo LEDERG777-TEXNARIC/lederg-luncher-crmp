@@ -1,6 +1,7 @@
 import unittest
+from pathlib import Path
 
-from web_runtime import should_trigger_xpanel_hotkey
+from web_runtime import is_game_window_process, should_trigger_xpanel_hotkey
 
 
 class XPanelHotkeyTests(unittest.TestCase):
@@ -36,6 +37,36 @@ class XPanelHotkeyTests(unittest.TestCase):
         self.assertFalse(
             should_trigger_xpanel_hotkey(
                 key_down=True, was_down=False, foreground_pid=0, game_pid=None
+            )
+        )
+
+    def test_child_gta_sa_process_inside_client_root_is_allowed(self):
+        self.assertTrue(
+            is_game_window_process(
+                r"C:\LEDERG\Client\gta_sa.exe", Path(r"C:\LEDERG\Client")
+            )
+        )
+
+    def test_native_runtime_inside_client_root_is_allowed(self):
+        self.assertTrue(
+            is_game_window_process(
+                r"C:\LEDERG\Client\grand_theft_auto_san_andreas.dll",
+                Path(r"C:\LEDERG\Client"),
+            )
+        )
+
+    def test_same_process_name_outside_client_root_is_rejected(self):
+        self.assertFalse(
+            is_game_window_process(
+                r"C:\OtherGame\gta_sa.exe", Path(r"C:\LEDERG\Client")
+            )
+        )
+
+    def test_unrelated_executable_inside_client_root_is_rejected(self):
+        self.assertFalse(
+            is_game_window_process(
+                r"C:\LEDERG\Client\multiplayer_browser_cr.exe",
+                Path(r"C:\LEDERG\Client"),
             )
         )
 
