@@ -19,6 +19,14 @@ jobs:
       - run: python tools/update_runtime_manifest.py
       - run: git diff --exit-code -- runtime-manifest.json
       - run: python -m unittest discover -v
+      - name: Build x86 direct-connect helper
+        shell: pwsh
+        run: |
+          $compiler = Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319\csc.exe"
+          if (!(Test-Path $compiler)) { throw "The .NET Framework C# compiler is not installed." }
+          & $compiler /nologo /platform:x86 /target:exe /out:LEDERG-DirectLaunch.exe direct_launcher.cs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (!(Test-Path "LEDERG-DirectLaunch.exe")) { throw "Direct-connect helper was not produced." }
       - run: pyinstaller --clean --noconfirm "LEDERG CRMP.spec"
       - uses: actions/upload-artifact@v4
         with:
