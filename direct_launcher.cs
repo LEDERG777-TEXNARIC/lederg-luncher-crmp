@@ -205,8 +205,11 @@ internal static class Program
                 if (key != null) key.SetValue("PlayerName", nickname, RegistryValueKind.String);
             }
 
-            string command = Quote(game) + " " + host + ":" + port.ToString(CultureInfo.InvariantCulture)
-                + " -n " + nickname;
+            // The multiplayer DLL reads the same native SA-MP-style startup flags
+            // as the direct runtime contract: -c -n <nick> -h <host> -p <port>.
+            // Passing only "host:port" opens GTA:SA without requesting a connection.
+            string command = Quote(game) + " -c -n " + Quote(nickname)
+                + " -h " + host + " -p " + port.ToString(CultureInfo.InvariantCulture);
             STARTUPINFO si = new STARTUPINFO();
             si.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFO));
             envPtr = BuildEnvironment(dllDirectory);
