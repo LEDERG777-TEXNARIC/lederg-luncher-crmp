@@ -38,7 +38,7 @@ def main() -> None:
         )
     payload = {"schema": 1, "version": VERSION, "files": entries}
     output = ROOT / "runtime-manifest.json"
-    output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.write_bytes((json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"))
     print(f"Wrote {output} with {len(entries)} SHA-256-verified runtime files.")
     for item in entries:
         print(f"{item['sha256']}  {item['path']}  ({item['size']} bytes)")
