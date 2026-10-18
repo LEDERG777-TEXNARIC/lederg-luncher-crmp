@@ -51,7 +51,7 @@ exe = EXE(
     a.datas,
     [],
     name="LEDERG CRMP",
-    icon=str(root / "LEDERG-CRMP-Avatar.ico"),
+    icon=(str(root / "LEDERG-CRMP-Avatar.ico") if (root / "LEDERG-CRMP-Avatar.ico").is_file() else None),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
