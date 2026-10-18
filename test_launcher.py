@@ -349,11 +349,13 @@ class LauncherTests(unittest.TestCase):
             dll.write_bytes(b"MZ")
             self.assertEqual(find_injected_multiplayer_dll(root), dll)
 
-    def test_web_launcher_uses_direct_helper_instead_of_runtime_dll_command(self):
+    def test_web_launcher_uses_native_crmp_runtime_and_not_the_injected_helper(self):
         source = Path(__file__).with_name("web_runtime.py").read_text(encoding="utf-8")
-        self.assertIn("command = build_direct_launcher_command(", source)
-        self.assertIn("helper = direct_launcher_path()", source)
-        self.assertNotIn("command = build_direct_game_command(runtime", source)
+        self.assertIn("runtime = find_direct_game_client(root)", source)
+        self.assertIn("command = build_direct_game_command(runtime, host, port, self._nickname)", source)
+        self.assertIn("working_directory = runtime.parent", source)
+        self.assertNotIn("build_direct_launcher_command(", source)
+        self.assertNotIn("direct_launcher_path()", source)
 
 
 if __name__ == "__main__":

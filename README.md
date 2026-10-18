@@ -7,7 +7,7 @@ Native Windows launcher with a live HTML/CSS/JavaScript interface delivered from
 - At startup, bootstrap.py retrieves runtime-manifest.json from the main branch.
 - The manifest is allow-listed and every runtime file is checked against its exact byte size and SHA-256 hash before use.
 - The last verified version is cached in %LOCALAPPDATA%\LEDERG CRMP\runtime. When GitHub is unavailable, the launcher falls back to the verified cache or embedded first-run files.
-- UI edits in web/index.html and changes to the runtime modules are picked up on the next launch without downloading a new EXE. The direct-connect helper is embedded in the Windows EXE and starts gta_sa.exe with the multiplayer DLL and configured server endpoint.
+- UI edits in web/index.html and changes to the runtime modules are picked up on the next launch without downloading a new EXE. The launcher starts the CR:MP runtime at multiplayer_c/grand_theft_auto_san_andreas.dll with the configured server endpoint. It does not inject san_andreas_multiplayer.dll into vanilla gta_sa.exe.
 - Game files are updated independently through the existing client manifest, with per-file CRC validation and resumable downloads.
 
 ## Development
