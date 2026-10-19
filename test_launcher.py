@@ -4,6 +4,7 @@ import re
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -160,11 +161,12 @@ class LauncherTests(unittest.TestCase):
             return FakeResponse(payload=payload)
         release = fetch_release_manifest(fetcher=fake_get)
         self.assertEqual(release["version"], "1.0.1")
-        self.assertEqual(
-            release["archive_url"],
-            CLIENT_MANIFEST_URL.rsplit("/", 1)[0] + "/downloads/GTA-Criminal-Russia.zip",
-        )
-        self.assertEqual(release["sha256"], digest)
+        from launcher import DRIVE_DOWNLOAD_URL
+
+        self.assertEqual(release["archive_url"], DRIVE_DOWNLOAD_URL)
+        self.assertEqual(release["sha256"], "")
+        self.assertEqual(release["archive_size"], 0)
+        self.assertEqual(release["files_manifest_url"], "")
 
     def test_legacy_browser_is_launched_without_unsupported_cli_arguments(self):
         exe = Path("multiplayer_c/multiplayer_browser_cr.exe")
@@ -259,17 +261,18 @@ class LauncherTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as temp:
                 destination = Path(temp)
-                partial = destination / ".lederg-crmp-download.zip.part"
+                partial = destination / ".lederg-crmp-google-drive.zip.part"
                 partial.write_bytes(archive_bytes)
                 url = f"http://127.0.0.1:{server.server_port}/downloads/client.zip"
-                with self.assertRaises(RuntimeError):
-                    download_archive(
-                        destination,
-                        url=url,
-                        expected_sha256="0" * 64,
-                        expected_size=len(archive_bytes),
-                    )
-                self.assertFalse((destination / ".lederg-crmp-download.zip").exists())
+                with patch("launcher._validate_client_archive_source", side_effect=lambda source: source):
+                    with self.assertRaises(RuntimeError):
+                        download_archive(
+                            destination,
+                            url=url,
+                            expected_sha256="0" * 64,
+                            expected_size=len(archive_bytes),
+                        )
+                self.assertFalse((destination / ".lederg-crmp-google-drive.zip").exists())
         finally:
             server.shutdown()
             server.server_close()
@@ -303,9 +306,10 @@ class LauncherTests(unittest.TestCase):
                 partial.write_bytes(archive_bytes[:len(archive_bytes) // 3])
                 url = f"http://127.0.0.1:{server.server_port}/downloads/client.zip"
                 digest = hashlib.sha256(archive_bytes).hexdigest()
-                completed = download_archive(
-                    destination, url=url, expected_sha256=digest, expected_size=len(archive_bytes)
-                )
+                with patch("launcher._validate_client_archive_source", side_effect=lambda source: source):
+                    completed = download_archive(
+                        destination, url=url, expected_sha256=digest, expected_size=len(archive_bytes)
+                    )
                 self.assertTrue(zipfile.is_zipfile(completed))
                 self.assertEqual(completed.read_bytes(), archive_bytes)
                 self.assertFalse(partial.exists())
