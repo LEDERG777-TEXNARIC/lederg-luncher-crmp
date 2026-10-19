@@ -52,7 +52,7 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
 .server-led{transition:background .25s,box-shadow .25s}
 .server-led.online{background:var(--green);box-shadow:0 0 16px #6ff3b2bb}
 .server-led.offline{background:var(--red);box-shadow:0 0 16px #ff244599}
-.server-meta{display:block;margin-top:5px;color:#777781;font-size:8px;font-weight:850;letter-spacing:1px}
+.server-meta{display:block;margin-top:5px;color:#777781;font-size:8px;font-weight:850;letter-spacing:1px;max-width:clamp(180px,35vw,360px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .server-meta.online{color:var(--green)}
 .server-meta.offline{color:#ff627b}
 .secondary-actions{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:13px;padding:11px 3px 0;border-top:1px solid #25252c}
@@ -285,6 +285,7 @@ function applyState(state) {
   $("serverLed").classList.toggle("offline", serverOffline);
   $("serverMeta").classList.toggle("online", serverOnline);
   $("serverMeta").classList.toggle("offline", serverOffline);
+  $("serverMeta").title = state.server_detail || "SA:MP server query status";
   $("serverMeta").textContent = serverOnline
     ? ("ОНЛАЙН" + (serverPing !== null ? " · PING " + serverPing + " MS" : " · QUERY OK"))
     : (serverOffline
