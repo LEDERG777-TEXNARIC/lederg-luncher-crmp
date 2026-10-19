@@ -117,7 +117,7 @@ def diagnose_auto_repair_failure(detail: str, phase: str = "") -> dict:
             "Проверь, что архив не удалён, не перемещён и что ссылка на нужный файл всё ещё актуальна."
         )
     elif (
-        re.search(r"\\b5\\d{2}\\b", folded)
+        re.search(r"\b5\d{2}\b", folded)
         and ("http" in folded or "google drive" in folded or "drive" in folded)
     ):
         problem = "Google Drive вернул временную серверную ошибку"
@@ -185,6 +185,17 @@ def diagnose_auto_repair_failure(detail: str, phase: str = "") -> dict:
         advice = (
             "Повтори загрузку и проверку. Если ошибка повторяется на том же месте, исходный ZIP на Google Drive "
             "может быть повреждён — потребуется проверить или перезалить архив."
+        )
+    elif (
+        "сначала полностью закрой cr:mp" in folded
+        or "игровой клиент ещё запущен" in folded
+        or "игровой клиент еще запущен" in folded
+        or "установка уже выполняется" in folded
+    ):
+        problem = "CR:MP всё ещё запущен или другая операция установки не завершена"
+        advice = (
+            "Полностью закрой игру и дождись окончания другой установки/проверки. "
+            "Затем нажми «Восстановить» ещё раз; файлы не будут перезаписываться на работающей игре."
         )
     elif (
         "permissionerror" in folded
