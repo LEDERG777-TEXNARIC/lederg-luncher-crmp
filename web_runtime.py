@@ -39,6 +39,8 @@ from launcher import (
     safe_extract_zip,
     sanitize_nickname,
     write_launcher_log,
+    query_samp_server,
+    format_client_exit_code,
 )
 
 DATA_HOME = Path(
@@ -208,10 +210,16 @@ class LauncherApi:
         self._xpanel_stop: threading.Event | None = None
         self._game_root: Path | None = None
         self._endpoint = f"{SERVER_HOST}:{SERVER_PORT}"
+        self._server_online: bool | None = None
+        self._server_ping_ms: int | None = None
+        self._server_method = "none"
+        self._server_detail = "Проверяю доступность сервера…"
+        self._server_checked_at = ""
+        self._last_exit_code: int | None = None
         self._nickname = self._read_text(NICK_FILE, "LEDERG")
         self._install_path = self._read_install_path()
         self._refresh_install_root()
-        threading.Thread(target=self._refresh_server, daemon=True, name="LEDERG-server-config").start()
+        threading.Thread(target=self._server_monitor, daemon=True, name="LEDERG-server-monitor").start()
         threading.Thread(target=self._startup_check, daemon=True, name="LEDERG-client-check").start()
 
     @staticmethod
@@ -282,10 +290,52 @@ class LauncherApi:
     def _refresh_server(self) -> None:
         try:
             host, port = load_server_address(SERVER_FILE)
+            endpoint = f"{host}:{port}"
             with self._lock:
-                self._endpoint = f"{host}:{port}"
+                previous = self._endpoint
+                self._endpoint = endpoint
+            if endpoint != previous:
+                write_launcher_log(f"Server endpoint refreshed from GitHub config: {endpoint}")
         except Exception as exc:
             write_launcher_log(f"Server config refresh failed: {exc!r}")
+
+    def _server_monitor(self) -> None:
+        """Refresh the public endpoint and poll the SA:MP query protocol in background."""
+        next_config_refresh = 0.0
+        last_online: bool | None = None
+        while True:
+            now = time.monotonic()
+            if now >= next_config_refresh:
+                self._refresh_server()
+                next_config_refresh = now + 60.0
+            with self._lock:
+                endpoint = self._endpoint
+            try:
+                host, port = parse_server_address(endpoint)
+                result = query_samp_server(host, port, timeout=0.8)
+            except Exception as exc:
+                result = {
+                    "online": False,
+                    "ping_ms": None,
+                    "method": "none",
+                    "detail": f"Не удалось проверить сервер: {exc}",
+                }
+            online = bool(result.get("online"))
+            checked_at = time.strftime("%H:%M:%S")
+            with self._lock:
+                self._server_online = online
+                self._server_ping_ms = result.get("ping_ms") if online else None
+                self._server_method = str(result.get("method") or "none")
+                self._server_detail = str(result.get("detail") or "")
+                self._server_checked_at = checked_at
+            if last_online is None or online != last_online:
+                write_launcher_log(
+                    f"Server query status changed: endpoint={endpoint}; online={online}; "
+                    f"ping_ms={result.get('ping_ms')}; method={result.get('method')}; "
+                    f"detail={result.get('detail')!r}"
+                )
+                last_online = online
+            time.sleep(12.0)
 
     def _startup_check(self) -> None:
         try:
@@ -319,6 +369,12 @@ class LauncherApi:
             error = self._error
             endpoint = self._endpoint
             nickname = self._nickname
+            server_online = self._server_online
+            server_ping_ms = self._server_ping_ms
+            server_method = self._server_method
+            server_detail = self._server_detail
+            server_checked_at = self._server_checked_at
+            last_exit_code = self._last_exit_code
         runtime = find_direct_game_client(root) if root else None
         browser = find_client(root) if root else None
         client_ready = bool(root and (root / "gta_sa.exe").is_file() and runtime)
@@ -335,6 +391,12 @@ class LauncherApi:
             "progress_label": progress_label,
             "current_file": current_file,
             "browser_found": bool(browser),
+            "server_online": server_online,
+            "server_ping_ms": server_ping_ms,
+            "server_method": server_method,
+            "server_detail": server_detail,
+            "server_checked_at": server_checked_at,
+            "last_exit_code": last_exit_code,
         }
 
     def set_nickname(self, nickname: str) -> dict:
@@ -416,9 +478,17 @@ class LauncherApi:
             # client runtime directly. Launching gta_sa.exe and injecting
             # san_andreas_multiplayer.dll produces the wrong adaptation context.
             working_directory = runtime.parent
+            try:
+                runtime_stat = runtime.stat()
+                runtime_details = (
+                    f"size={runtime_stat.st_size}; modified={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(runtime_stat.st_mtime))}"
+                )
+            except OSError as stat_error:
+                runtime_details = f"stat_error={stat_error!r}"
             write_launcher_log(
-                f"Native CR:MP runtime launch: executable={runtime}; cwd={working_directory}; "
-                f"endpoint={host}:{port}; nickname={self._nickname}"
+                f"Native CR:MP runtime launch: executable={runtime}; {runtime_details}; "
+                f"cwd={working_directory}; endpoint={host}:{port}; nickname={self._nickname}; "
+                f"command={subprocess.list2cmdline(command)!r}"
             )
             process = subprocess.Popen(
                 command,
@@ -502,35 +572,67 @@ class LauncherApi:
             code = process.wait()
             if self._xpanel_stop is not None and self._process is process:
                 self._xpanel_stop.set()
+            code_hex = f"0x{(int(code) & 0xFFFFFFFF):08X}"
             with self._lock:
+                self._last_exit_code = int(code)
                 if self._process is process:
                     self._process = None
                     if code == 0:
                         self._status = "Игровой клиент закрылся."
                         self._phase = "ready" if self.get_state()["client_ready"] else "idle"
                     else:
-                        self._status = f"Клиент завершился с кодом {code}. Смотри журнал."
+                        self._status = format_client_exit_code(code)
                         self._phase = "error"
                         self._error = self._status
-            write_launcher_log(f"Native runtime exited: code={code}")
+            write_launcher_log(
+                f"Native runtime exited: pid={process.pid}; code={code}; hex={code_hex}; "
+                f"command={process.args!r}"
+            )
         except Exception as exc:
             write_launcher_log(f"Process monitor error: {exc!r}")
 
     def start_install(self) -> dict:
+        return self._begin_install(reinstall=False)
+
+    def reinstall_client(self) -> dict:
+        """Re-download the official Drive archive and restore files over the installation."""
+        return self._begin_install(reinstall=True)
+
+    def _begin_install(self, *, reinstall: bool) -> dict:
         with self._lock:
             if self._busy:
                 return {"ok": False, "message": "Установка уже выполняется."}
-            selected = self._install_path
+            if self._process is not None and self._process.poll() is None:
+                return {
+                    "ok": False,
+                    "message": "Сначала полностью закрой CR:MP, затем запускай восстановление.",
+                }
+            selected = (self._game_root or self._install_path) if reinstall else self._install_path
             if selected is None:
-                return {"ok": False, "message": "Сначала нажми «Выбрать» и укажи папку установки."}
+                return {"ok": False, "message": "Сначала выбери папку установки."}
             self._busy = True
             self._phase = "manifest"
-            self._status = "Получаю проверенный манифест клиента…"
+            self._status = (
+                "Готовлю переустановку и проверку файлов…"
+                if reinstall else "Готовлю установку игрового клиента…"
+            )
             self._progress = 0.0
-            self._progress_label = "ПОДГОТОВКА"
+            self._progress_label = "ПЕРЕУСТАНОВКА" if reinstall else "ПОДГОТОВКА"
             self._error = ""
-        threading.Thread(target=self._install_worker, args=(selected,), daemon=True, name="LEDERG-install").start()
-        return {"ok": True, "message": "Проверка и установка клиента запущены."}
+        write_launcher_log(
+            f"Client {'reinstall/repair' if reinstall else 'install'} requested: selected={selected}"
+        )
+        threading.Thread(
+            target=self._install_worker,
+            args=(selected, reinstall),
+            daemon=True,
+            name="LEDERG-reinstall" if reinstall else "LEDERG-install",
+        ).start()
+        return {
+            "ok": True,
+            "message": "Переустановка и восстановление файлов запущены."
+            if reinstall else "Установка клиента запущена.",
+        }
 
     def _set_progress(self, phase: str, done: int, total: int, label: str) -> None:
         with self._lock:
@@ -545,12 +647,19 @@ class LauncherApi:
             else:
                 self._progress_label = "ПРОВЕРКА ФАЙЛОВ"
 
-    def _install_worker(self, selected: Path) -> None:
+    def _install_worker(self, selected: Path, reinstall: bool = False) -> None:
         archive: Path | None = None
         try:
             with self._lock:
-                self._status = "Обновляю конфигурацию сервера…"
+                self._status = (
+                    "Загружаю архив заново для восстановления клиента…"
+                    if reinstall else "Обновляю конфигурацию сервера…"
+                )
                 self._phase = "manifest"
+            if reinstall:
+                write_launcher_log(
+                    f"Reinstall mode active: existing game files will be overwritten from Drive; root={selected}"
+                )
             try:
                 release = fetch_release_manifest()
             except Exception as exc:
