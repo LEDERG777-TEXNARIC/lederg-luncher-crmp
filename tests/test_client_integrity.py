@@ -130,7 +130,7 @@ class ClientSelfCheckTests(unittest.TestCase):
             report = inspect_client_installation(root, full_scan=False)
 
         self.assertFalse(report["healthy"])
-        self.assertTrue(any("san_andreas_multiplayer.dll" in issue and "hash" in issue.lower() for issue in report["issues"]))
+        self.assertTrue(any("san_andreas_multiplayer.dll" in issue and "sha-256" in issue.lower() for issue in report["issues"]))
 
     def test_archive_extraction_builds_integrity_manifest_rebased_to_actual_game_root(self):
         with tempfile.TemporaryDirectory() as temp:
