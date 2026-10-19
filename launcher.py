@@ -260,9 +260,17 @@ def inspect_client_installation(
                 issues.append(f"Отсутствует папка клиента: {relative}")
         for relative in CLIENT_REQUIRED_FILES:
             target = root / relative
-            if not target.is_file() or target.stat().st_size <= 0 if target.exists() else True:
+            if not target.is_file():
                 missing_files.append(relative)
-                issues.append(f"Отсутствует или пустой обязательный файл: {relative}")
+                issues.append(f"Отсутствует обязательный файл: {relative}")
+                continue
+            try:
+                if target.stat().st_size <= 0:
+                    missing_files.append(relative)
+                    issues.append(f"Обязательный файл пустой: {relative}")
+            except OSError as exc:
+                missing_files.append(relative)
+                issues.append(f"Не удалось проверить файл {relative}: {exc}")
         for relative in CLIENT_PE_FILES:
             target = root / relative
             if target.is_file():
@@ -293,6 +301,7 @@ def inspect_client_installation(
                 processed_bytes = 0
                 seen: set[str] = set()
                 changed_manifest = False
+                critical_paths = {name.casefold() for name in CLIENT_PE_FILES}
                 integrity_mode = "full" if full_scan else "fast"
                 for entry in entries:
                     if not isinstance(entry, dict):
@@ -356,9 +365,7 @@ def inspect_client_installation(
                             progress_callback(processed_bytes, total_bytes, raw)
                         continue
                     old_mtime = int(entry.get("mtime_ns", -1))
-                    must_hash = full_scan or info.st_mtime_ns != old_mtime or key in {
-                        name.casefold() for name in CLIENT_PE_FILES
-                    }
+                    must_hash = full_scan or info.st_mtime_ns != old_mtime or key in critical_paths
                     if must_hash:
                         actual_hash = _sha256_file(target)
                         checked_files += 1
