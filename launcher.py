@@ -432,6 +432,29 @@ def inspect_client_installation(
     }
 
 
+
+def select_client_crash_events(
+    events: str | list[str] | tuple[str, ...], install_root: Path
+) -> list[str]:
+    """Keep recent access-violation events whose Windows paths point inside this install."""
+    texts = [events] if isinstance(events, str) else list(events or [])
+    root = os.path.normcase(os.path.abspath(os.fspath(install_root))).replace("/", "\\").rstrip("\\")
+    if not root:
+        return []
+    root_folded = root.casefold()
+    selected = []
+    for event in texts:
+        raw = str(event or "")
+        folded = raw.replace("/", "\\").casefold()
+        if "0xc0000005" not in folded:
+            continue
+        # Require a path boundary so C:\Games\CR does not match C:\Games\CR-Old.
+        if root_folded not in folded:
+            continue
+        selected.append(raw)
+    return selected[:10]
+
+
 def extract_faulting_module_path(
     events: str | list[str] | tuple[str, ...]
 ) -> str | None:
