@@ -69,7 +69,7 @@ def parse_windows_crash_event_payload(
         return []
 
     names = {
-        str(name).replace("\\\\", "/").rsplit("/", 1)[-1].casefold()
+        str(name).replace("\\", "/").rsplit("/", 1)[-1].casefold()
         for name in executable_names
         if str(name).strip()
     }
@@ -89,7 +89,7 @@ def parse_windows_crash_event_payload(
         provider = str(event.get("ProviderName") or "unknown provider")
         matches.append(
             f"Windows Application event: time={timestamp}; id={event_id}; "
-            f"provider={provider}\\n{message}"
+            f"provider={provider}\n{message}"
         )
     return matches[:10]
 
@@ -106,7 +106,7 @@ def collect_windows_crash_events(
     if os.name != "nt":
         return []
     normalized_names = [
-        str(name).replace("\\\\", "/").rsplit("/", 1)[-1]
+        str(name).replace("\\", "/").rsplit("/", 1)[-1]
         for name in executable_names
         if str(name).strip()
     ]
@@ -725,7 +725,7 @@ class LauncherApi:
                 command = process.args
                 command_items = [command] if isinstance(command, str) else list(command or [])
                 executable_names = [
-                    str(item).replace("\\\\", "/").rsplit("/", 1)[-1]
+                    str(item).replace("\\", "/").rsplit("/", 1)[-1]
                     for item in command_items
                     if str(item).strip()
                 ]
