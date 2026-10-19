@@ -31,6 +31,29 @@ class LauncherSourcePolicyTests(unittest.TestCase):
         self.assertEqual(manifest["archive_size"], 0)
         self.assertEqual(manifest["sha256"], "")
 
+    def test_server_endpoint_is_fetched_from_the_public_ip_config(self):
+        captured = {}
+        response = SimpleNamespace(
+            raise_for_status=lambda: None,
+            text="crmp.example:8904\n",
+        )
+
+        def fetcher(url, **kwargs):
+            captured["url"] = url
+            return response
+
+        from tempfile import TemporaryDirectory
+        from pathlib import Path
+
+        with TemporaryDirectory() as folder:
+            endpoint = launcher.load_server_address(
+                Path(folder) / "server_address.txt",
+                fetcher=fetcher,
+            )
+
+        self.assertEqual(captured["url"], "https://raw.githubusercontent.com/LEDERG777-TEXNARIC/lederg-ip-crmp/main/ip")
+        self.assertEqual(endpoint, ("crmp.example", 8904))
+
     def test_only_the_exact_google_drive_file_is_an_allowed_archive_source(self):
         self.assertEqual(
             launcher._validate_client_archive_source(launcher.DRIVE_DOWNLOAD_URL),
