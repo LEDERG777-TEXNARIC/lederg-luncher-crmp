@@ -253,5 +253,28 @@ class AutomaticRepairGuardTests(unittest.TestCase):
             begin.assert_called_once_with(reinstall=True, auto_repair_root=root)
 
 
+    def test_failed_repair_diagnosis_classifies_google_drive_http_503(self):
+        from web_runtime import diagnose_auto_repair_failure
+
+        diagnosis = diagnose_auto_repair_failure(
+            "Не удалось получить архив Google Drive: HTTP 503 Service Unavailable",
+            "download",
+        )
+
+        self.assertIn("серверную ошибку", diagnosis["problem"].lower())
+        self.assertIn("позже", diagnosis["advice"].lower())
+
+    def test_failed_repair_diagnosis_classifies_running_game_block(self):
+        from web_runtime import diagnose_auto_repair_failure
+
+        diagnosis = diagnose_auto_repair_failure(
+            "Сначала полностью закрой CR:MP, затем запускай восстановление.",
+            "schedule",
+        )
+
+        self.assertIn("всё ещё запущен", diagnosis["problem"].lower())
+        self.assertIn("закрой игру", diagnosis["advice"].lower())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
