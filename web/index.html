@@ -109,6 +109,17 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
 .btn-progress span{display:block;width:0;height:100%;background:#fff;box-shadow:0 0 12px #fff;transition:width .25s}
 .primary-action.is-busy .btn-progress{opacity:1}
 .status-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px 2px 0}
+.repair-diagnostic{position:relative;margin-top:15px;padding:15px 16px;border:1px solid #6f2938;border-radius:15px;background:linear-gradient(115deg,#1a0e13f5,#100d12f5);box-shadow:inset 3px 0 #ff2445,0 12px 28px #0003}
+.repair-diagnostic[hidden]{display:none}
+.repair-diagnostic-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px;color:#a9a0aa;font-size:8px;font-weight:950;letter-spacing:1.8px}
+.repair-diagnostic-tag{color:#ff8295}
+.repair-diagnostic strong{display:block;color:#fff;font-size:13px;line-height:1.45;font-weight:950;letter-spacing:.1px}
+.repair-diagnostic p{margin:8px 0 0;color:#c3bbc5;font-size:11px;line-height:1.65;white-space:normal}
+.repair-diagnostic-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px}
+.repair-retry{color:#ff91a2;font-size:9px;font-weight:900;letter-spacing:1px}
+.repair-diagnostic-technical{margin-top:11px;border-top:1px solid #42232d;padding-top:9px}
+.repair-diagnostic-technical>div{color:#8d818d;font-size:8px;font-weight:900;letter-spacing:1.4px}
+.repair-diagnostic pre{margin:8px 0 0;max-height:125px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:#d3cbd4;font:10px/1.6 "Cascadia Code",Consolas,monospace}
 .status-left{display:flex;align-items:center;gap:9px;min-width:0}
 .status-light{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:var(--amber)}
 .status-light.good{background:var(--green);box-shadow:0 0 12px #6ff3b277}
@@ -219,11 +230,21 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
         <div class="status-left"><span class="status-light" id="statusLight"></span><span class="status-message" id="statusText">Готов к установке.</span></div>
         <div class="progress-label"><span id="progressLabel">КЛИЕНТ НЕ УСТАНОВЛЕН</span> · <span id="progressPercent">0%</span></div>
       </div>
+      <section class="repair-diagnostic" id="repairDiagnostic" hidden role="status" aria-live="polite" aria-label="Диагностика ошибки восстановления">
+        <div class="repair-diagnostic-head"><span class="repair-diagnostic-tag">ПРИЧИНА СБОЯ</span><span id="repairPhase">АВТОВОССТАНОВЛЕНИЕ</span></div>
+        <strong id="repairProblem">Не удалось восстановить игровой клиент</strong>
+        <p id="repairAdvice"></p>
+        <div class="repair-diagnostic-foot"><span class="repair-retry" id="repairRetry"></span></div>
+        <div class="repair-diagnostic-technical">
+          <div>ИСХОДНАЯ ОШИБКА · НЕ СОКРАЩЕНА</div>
+          <pre id="repairDetail"></pre>
+        </div>
+      </section>
     </section>
   </main>
 
   <footer class="footer">
-    <div>LEDERG <strong>CR:MP</strong> &nbsp;·&nbsp; BUILD <strong>2.5</strong></div>
+    <div>LEDERG <strong>CR:MP</strong> &nbsp;·&nbsp; BUILD <strong>2.5.2</strong></div>
     <div class="footer-right"><span id="clientBadge">CLIENT CHECK</span><button class="footer-link" id="openLog">ЖУРНАЛ</button><button class="footer-link" id="changeFolder">ИЗМЕНИТЬ ПАПКУ</button></div>
   </footer>
 </div>
@@ -304,6 +325,21 @@ function applyState(state) {
   $("secondaryActions").hidden = !(ready || clientFound);
   $("reinstallButton").disabled = working || actionPending;
   $("statusText").textContent = state.error || state.status || (ready ? "Клиент установлен. Можно играть." : "Готов к установке.");
+
+  const repairFailure = state.repair_failure && typeof state.repair_failure === "object"
+    ? state.repair_failure : null;
+  const hasRepairFailure = Boolean(repairFailure && repairFailure.problem);
+  $("repairDiagnostic").hidden = !hasRepairFailure;
+  if (hasRepairFailure) {
+    $("repairProblem").textContent = repairFailure.problem;
+    $("repairAdvice").textContent = repairFailure.advice || "Открой «ЖУРНАЛ», чтобы увидеть подробности.";
+    $("repairPhase").textContent = repairFailure.phase_label || "АВТОВОССТАНОВЛЕНИЕ";
+    $("repairDetail").textContent = repairFailure.detail || "Текст исключения не сохранён. Открой «ЖУРНАЛ».";
+    const retryMinutes = Number(repairFailure.retry_minutes);
+    $("repairRetry").textContent = Number.isFinite(retryMinutes) && retryMinutes > 0
+      ? ("АВТОПОВТОР ЧЕРЕЗ " + retryMinutes + " МИН · ПЕРЕУСТАНОВИТЬ МОЖНО СРАЗУ")
+      : "ТЕХНИЧЕСКАЯ ПРИЧИНА СОХРАНЕНА · ПОЛНЫЙ ЖУРНАЛ В «ЖУРНАЛ»";
+  }
   $("progressLabel").textContent = state.progress_label || (ready ? "ГОТОВ К ЗАПУСКУ" : "КЛИЕНТ НЕ УСТАНОВЛЕН");
   $("progressPercent").textContent = Math.round(progress) + "%";
   $("buttonProgress").style.width = progress + "%";

@@ -48,6 +48,82 @@ class AutomaticRepairGuardTests(unittest.TestCase):
             self.assertIn("24 часа", api._error)
             self.assertEqual(state["result"], "in_progress")
 
+    def test_retry_cooldown_preserves_the_actual_repair_failure(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "GTA Criminal Russia"
+            root.mkdir()
+            guard = Path(temp) / "auto-repair-state.json"
+            now = 1_800_000_000.0
+            actual_error = (
+                "Ошибка обновления: На выбранном диске недостаточно свободного места. "
+                "Нужно примерно 4.2 ГБ, доступно 1.1 ГБ."
+            )
+            guard.write_text(json.dumps({
+                "root": str(root.resolve()),
+                "attempted_at": now - 60,
+                "reason": "client integrity failure",
+                "result": "failed",
+                "detail": actual_error,
+                "phase": "download",
+            }), encoding="utf-8")
+            api = self.make_api_stub(root)
+
+            with (
+                patch("web_runtime.AUTO_REPAIR_STATE_FILE", guard),
+                patch("web_runtime.time.time", return_value=now),
+                patch("web_runtime.write_launcher_log"),
+            ):
+                blocked = api._auto_repair_allowed(root, "same damaged files")
+
+            self.assertFalse(blocked)
+            self.assertIn("не хватает свободного места", api._error.lower())
+            self.assertIn("через 14 мин", api._error.lower())
+            self.assertIn("4.2", api._repair_failure["detail"])
+            self.assertIn("1.1", api._repair_failure["detail"])
+            self.assertIn("диске", api._repair_failure["advice"].lower())
+
+    def test_saved_failure_diagnosis_loads_at_launcher_startup(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "GTA Criminal Russia"
+            root.mkdir()
+            guard = Path(temp) / "auto-repair-state.json"
+            now = 1_800_000_000.0
+            guard.write_text(json.dumps({
+                "root": str(root.resolve()),
+                "attempted_at": now - 60,
+                "finished_at": now - 30,
+                "reason": "client integrity failure",
+                "result": "failed",
+                "phase": "download",
+                "detail": (
+                    "На выбранном диске недостаточно свободного места. "
+                    "Нужно примерно 4.2 ГБ, доступно 1.1 ГБ."
+                ),
+            }), encoding="utf-8")
+
+            with (
+                patch("web_runtime.AUTO_REPAIR_STATE_FILE", guard),
+                patch("web_runtime.time.time", return_value=now),
+            ):
+                diagnosis = LauncherApi._load_saved_repair_failure()
+
+            self.assertIn("свободного места", diagnosis["problem"].lower())
+            self.assertIn("4.2", diagnosis["detail"])
+            self.assertIn("1.1", diagnosis["detail"])
+            self.assertEqual(diagnosis["retry_minutes"], 14)
+
+    def test_failed_repair_diagnostic_classifier_identifies_google_drive_http_403(self):
+        from web_runtime import diagnose_auto_repair_failure
+
+        diagnosis = diagnose_auto_repair_failure(
+            "Ошибка обновления: Не удалось подключиться к указанному архиву Google Drive. "
+            "Детали: 403 Client Error: Forbidden"
+        )
+
+        self.assertIn("Google Drive", diagnosis["problem"])
+        self.assertIn("403", diagnosis["detail"])
+        self.assertTrue(diagnosis["advice"])
+
     def test_failed_repair_uses_short_retry_cooldown_instead_of_full_day(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "GTA Criminal Russia"
@@ -175,6 +251,29 @@ class AutomaticRepairGuardTests(unittest.TestCase):
 
             self.assertTrue(started)
             begin.assert_called_once_with(reinstall=True, auto_repair_root=root)
+
+
+    def test_failed_repair_diagnosis_classifies_google_drive_http_503(self):
+        from web_runtime import diagnose_auto_repair_failure
+
+        diagnosis = diagnose_auto_repair_failure(
+            "Не удалось получить архив Google Drive: HTTP 503 Service Unavailable",
+            "download",
+        )
+
+        self.assertIn("серверную ошибку", diagnosis["problem"].lower())
+        self.assertIn("позже", diagnosis["advice"].lower())
+
+    def test_failed_repair_diagnosis_classifies_running_game_block(self):
+        from web_runtime import diagnose_auto_repair_failure
+
+        diagnosis = diagnose_auto_repair_failure(
+            "Сначала полностью закрой CR:MP, затем запускай восстановление.",
+            "schedule",
+        )
+
+        self.assertIn("всё ещё запущен", diagnosis["problem"].lower())
+        self.assertIn("закрой игру", diagnosis["advice"].lower())
 
 
 if __name__ == "__main__":
