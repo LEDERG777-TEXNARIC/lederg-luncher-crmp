@@ -111,7 +111,7 @@ class ClientSelfCheckTests(unittest.TestCase):
             report = inspect_client_installation(root)
 
         self.assertFalse(report["healthy"])
-        self.assertTrue(any("multiplayer_browser_cr.exe" in issue and "PE" in issue for issue in report["issues"]))
+        self.assertTrue(any("multiplayer_browser_cr.exe" in issue and "бинарный файл" in issue for issue in report["issues"]))
 
     def test_integrity_manifest_detects_same_size_binary_corruption_after_stat_change(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -158,6 +158,7 @@ class ClientSelfCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "enbseries.ini").write_text("[GLOBAL]", encoding="utf-8")
+            (root / "ENBSeries_License.txt").write_text("test license", encoding="utf-8")
             proxy = root / "d3d9.dll"
             proxy.write_bytes(b"legacy ENB proxy")
 
