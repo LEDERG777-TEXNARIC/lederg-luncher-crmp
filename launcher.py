@@ -115,6 +115,151 @@ def parse_server_address(value: str) -> tuple[str, int]:
     return host, port
 
 
+def build_samp_query_packet(
+    ip: str, port: int, *, opcode: str, challenge: bytes = b""
+) -> bytes:
+    """Build a SA:MP UDP query header for an IPv4 server endpoint."""
+    parsed_ip = ipaddress.ip_address(str(ip).strip())
+    if parsed_ip.version != 4:
+        raise ValueError("SA:MP server queries require an IPv4 endpoint.")
+    port = int(port)
+    if not 1 <= port <= 65535:
+        raise ValueError("Server port must be between 1 and 65535.")
+    if not isinstance(opcode, str) or len(opcode) != 1 or not opcode.isascii():
+        raise ValueError("SA:MP query opcode must be one ASCII character.")
+    if opcode == "p" and len(challenge) != 4:
+        raise ValueError("SA:MP ping queries require a four-byte challenge.")
+    if opcode != "p" and challenge:
+        raise ValueError("Only ping queries can carry a challenge.")
+    return (
+        b"SAMP"
+        + parsed_ip.packed
+        + port.to_bytes(2, "little")
+        + opcode.encode("ascii")
+        + challenge
+    )
+
+
+def query_samp_server(
+    host: str,
+    port: int,
+    *,
+    timeout: float = 0.8,
+    challenge: bytes | None = None,
+) -> dict:
+    """Query a SA:MP server with protocol packets and return online state plus RTT.
+
+    A valid SA:MP ping echo is preferred. If ping queries are disabled, a correctly
+    framed information-query reply is accepted as proof that the query endpoint responds.
+    A plain UDP send is never treated as proof of an online server.
+    """
+    try:
+        port = int(port)
+        if not 1 <= port <= 65535:
+            raise ValueError("Некорректный порт сервера.")
+        records = socket.getaddrinfo(
+            str(host).strip(), port, family=socket.AF_INET, type=socket.SOCK_DGRAM
+        )
+        if not records:
+            raise OSError("Не удалось разрешить IPv4-адрес сервера.")
+        ip = str(records[0][4][0])
+        token = os.urandom(4) if challenge is None else bytes(challenge)
+        if len(token) != 4:
+            raise ValueError("Ping challenge must be exactly four bytes.")
+        ping_packet = build_samp_query_packet(ip, port, opcode="p", challenge=token)
+        info_packet = build_samp_query_packet(ip, port, opcode="i")
+    except (OSError, ValueError, TypeError) as exc:
+        return {
+            "online": False,
+            "ping_ms": None,
+            "method": "none",
+            "detail": f"Ошибка адреса сервера: {exc}",
+        }
+
+    udp = None
+    try:
+        udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp.settimeout(max(0.05, min(float(timeout), 5.0)))
+        endpoint = (ip, port)
+
+        ping_started = time.perf_counter()
+        udp.sendto(ping_packet, endpoint)
+        try:
+            response, peer = udp.recvfrom(2048)
+        except socket.timeout:
+            response, peer = b"", None
+        ping_elapsed = max(0, round((time.perf_counter() - ping_started) * 1000))
+
+        if (
+            peer is not None
+            and peer[0] == ip
+            and peer[1] == port
+            and response[:11] == ping_packet[:11]
+            and response[11:15] == token
+            and len(response) >= 15
+        ):
+            return {
+                "online": True,
+                "ping_ms": ping_elapsed,
+                "method": "ping",
+                "detail": "Ответ на SA:MP ping",
+            }
+
+        info_started = time.perf_counter()
+        udp.sendto(info_packet, endpoint)
+        try:
+            response, peer = udp.recvfrom(4096)
+        except socket.timeout:
+            response, peer = b"", None
+        info_elapsed = max(0, round((time.perf_counter() - info_started) * 1000))
+        if (
+            peer is not None
+            and peer[0] == ip
+            and peer[1] == port
+            and response[:11] == info_packet[:11]
+            and len(response) > 11
+        ):
+            return {
+                "online": True,
+                "ping_ms": info_elapsed,
+                "method": "info",
+                "detail": "Ответ на SA:MP info",
+            }
+        return {
+            "online": False,
+            "ping_ms": None,
+            "method": "none",
+            "detail": "Нет ответа на SA:MP query",
+        }
+    except (OSError, ValueError, TypeError) as exc:
+        return {
+            "online": False,
+            "ping_ms": None,
+            "method": "none",
+            "detail": f"Ошибка UDP-запроса: {exc}",
+        }
+    finally:
+        if udp is not None:
+            try:
+                udp.close()
+            except OSError:
+                pass
+
+
+def format_client_exit_code(code: int) -> str:
+    """Translate common Windows process failure codes into actionable diagnostics."""
+    unsigned = int(code) & 0xFFFFFFFF
+    if unsigned == 0xC0000005:
+        return (
+            "CR:MP аварийно завершился: 0xC0000005 (ACCESS_VIOLATION — нарушение "
+            "доступа к памяти). Это сбой игрового клиента или одной из его DLL; "
+            "сам код не указывает виновный файл. Нажми «Переустановить» для "
+            "восстановления файлов. Если повторится, нужен журнал Windows "
+            "«Приложение» с именем сбойного модуля."
+        )
+    return f"Клиент завершился с кодом {code} (0x{unsigned:08X})."
+
+
 def load_server_address(cache_path: Path, fetcher=None) -> tuple[str, int]:
     """Refresh server endpoint from GitHub; use last known good cache offline."""
     fetcher = fetcher or HTTP.get
