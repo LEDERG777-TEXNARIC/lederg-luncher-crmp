@@ -225,8 +225,22 @@ function toast(message) {
 }
 function setBusy(value) {
   busyUi = Boolean(value);
-  $("playButton").disabled = busyUi;
-  $("playButton").classList.toggle("is-busy", busyUi);
+  const button = $("playButton");
+  if (busyUi) {
+    button.disabled = true;
+    button.classList.add("is-busy");
+    $("playLabel").textContent = "ПОДГОТОВКА";
+    $("buttonHint").textContent = "НЕ ЗАКРЫВАЙ ЛАУНЧЕР";
+    $("buttonArrow").textContent = "…";
+    return;
+  }
+  // Re-render from the latest native state so the CTA restores to INSTALL or PLAY.
+  if (latestState && typeof latestState === "object") {
+    applyState(latestState);
+  } else {
+    button.disabled = false;
+    button.classList.remove("is-busy");
+  }
 }
 function applyState(state) {
   if (!state || typeof state !== "object") return;
