@@ -1005,6 +1005,7 @@ class LauncherApi:
 
     def _install_worker(self, selected: Path, reinstall: bool = False) -> None:
         archive: Path | None = None
+        integrity_inventory = DATA_HOME / "pending-client-integrity.json"
         try:
             with self._lock:
                 self._status = (
@@ -1055,10 +1056,12 @@ class LauncherApi:
                     expected_sha256=release.get("sha256", ""),
                     expected_size=int(release.get("archive_size", 0) or 0),
                 )
+                integrity_inventory.unlink(missing_ok=True)
                 count = safe_extract_zip(
                     archive,
                     destination,
                     progress=lambda done, total, name: self._set_progress("extract", done, total, name),
+                    integrity_manifest_path=integrity_inventory,
                 )
                 client = find_client(destination, release.get("client_executable"))
                 if not client:
@@ -1073,20 +1076,35 @@ class LauncherApi:
                         "В архиве не найден игровой runtime grand_theft_auto_san_andreas.dll. "
                         "Нужен полный CR:MP-клиент, не только браузер серверов."
                     )
+                finalize_client_integrity_manifest(root, destination, integrity_inventory)
+                health = inspect_client_installation(root, full_scan=False)
+                if not health["healthy"]:
+                    raise RuntimeError(
+                        "После распаковки автопроверка обнаружила проблемы: "
+                        + "; ".join(health["issues"][:8])
+                    )
                 try:
                     archive.unlink(missing_ok=True)
                 except OSError:
                     pass
+                integrity_inventory.unlink(missing_ok=True)
                 self._write_install_path(root)
                 with self._lock:
                     self._game_root = root
                     self._install_path = root
+                    self._client_health = health
                     self._progress = 100.0
-                    self._progress_label = "ГОТОВО"
-                    self._status = f"Клиент установлен из Google Drive ({count} файлов)."
+                    self._progress_label = "ПРОВЕРКА ПРОЙДЕНА"
+                    self._status = (
+                        f"Клиент установлен и проверен ({count} файлов). "
+                        f"{health['summary']}"
+                    )
                     self._phase = "ready"
                     self._error = ""
-                write_launcher_log(f"Google Drive client installation completed: root={root}; files={count}")
+                write_launcher_log(
+                    f"Google Drive client installation completed and verified: "
+                    f"root={root}; files={count}; health={health!r}"
+                )
                 return
 
             install_name = str(manifest.get("install_root", "GTA Criminal Russia"))
@@ -1138,6 +1156,11 @@ class LauncherApi:
                 self._error = str(exc)
                 self._status = f"Ошибка обновления: {exc}"
         finally:
+            try:
+                integrity_inventory.unlink(missing_ok=True)
+                integrity_inventory.with_name(integrity_inventory.name + ".tmp").unlink(missing_ok=True)
+            except OSError:
+                pass
             with self._lock:
                 self._busy = False
 
