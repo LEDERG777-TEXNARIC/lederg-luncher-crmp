@@ -4,7 +4,7 @@ import socket
 import unittest
 from unittest.mock import patch
 
-from launcher import build_samp_query_packet, query_samp_server
+from launcher import build_samp_query_packet, format_client_exit_code, query_samp_server
 
 
 class FakeUdpSocket:
@@ -80,7 +80,7 @@ class SampServerQueryTests(unittest.TestCase):
 
         self.assertTrue(result["online"])
         self.assertEqual(result["method"], "info")
-        self.assertIsNone(result["ping_ms"])
+        self.assertIsInstance(result["ping_ms"], int)
         self.assertEqual(len(udp.sent), 2)
 
     def test_reports_offline_after_both_query_packets_time_out(self):
@@ -98,6 +98,13 @@ class SampServerQueryTests(unittest.TestCase):
         self.assertFalse(result["online"])
         self.assertIsNone(result["ping_ms"])
         self.assertTrue(udp.closed)
+
+    def test_explains_windows_access_violation_exit_code(self):
+        message = format_client_exit_code(3221225477)
+
+        self.assertIn("0xC0000005", message)
+        self.assertIn("ACCESS_VIOLATION", message)
+        self.assertIn("Переустановить", message)
 
     def test_rejects_a_response_with_a_different_ping_challenge(self):
         address = ("188.127.241.8", 1130)
