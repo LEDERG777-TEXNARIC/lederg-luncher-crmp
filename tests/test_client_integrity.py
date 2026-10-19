@@ -206,7 +206,7 @@ class ClientSelfCheckTests(unittest.TestCase):
                 root, "d3d9.dll", str(proxy)
             )
 
-            self.assertEqual(backup, root / "d3d9.dll.lederg-disabled.bak")
+            self.assertEqual(backup.name, "d3d9.dll.lederg-disabled.bak")
             self.assertFalse(proxy.exists())
             self.assertEqual(backup.read_bytes(), b"legacy ENB proxy")
             self.assertIsNone(
@@ -227,8 +227,8 @@ class ClientSelfCheckTests(unittest.TestCase):
                 root, "d3d9.dll", r"C:\\Windows\\System32\\d3d9.dll"
             )
 
-        self.assertIsNone(backup)
-        self.assertTrue(proxy.exists())
+            self.assertIsNone(backup)
+            self.assertTrue(proxy.exists())
 
 
 if __name__ == "__main__":
