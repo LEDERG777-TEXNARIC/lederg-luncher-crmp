@@ -450,9 +450,13 @@ class LauncherApi:
                 previous = json.loads(AUTO_REPAIR_STATE_FILE.read_text(encoding="utf-8"))
             except (OSError, ValueError, TypeError):
                 previous = {}
+            try:
+                previous_attempt = float(previous.get("attempted_at") or 0)
+            except (TypeError, ValueError):
+                previous_attempt = 0.0
             if (
                 str(previous.get("root") or "").casefold() == resolved.casefold()
-                and now - float(previous.get("attempted_at") or 0) < AUTO_REPAIR_COOLDOWN_SECONDS
+                and now - previous_attempt < AUTO_REPAIR_COOLDOWN_SECONDS
             ):
                 write_launcher_log(
                     f"Automatic repair suppressed by 24h safety limit: root={resolved}; reason={reason}"
