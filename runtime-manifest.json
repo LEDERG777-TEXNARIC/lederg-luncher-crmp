@@ -2,30 +2,30 @@
   "files": [
     {
       "path": "client_updates.py",
-      "sha256": "597add7ec9b56a792f0e739a6e350114adde2a14b2a32811ea6086ed83f9fda0",
-      "size": 13451
+      "size": 13451,
+      "sha256": "597add7ec9b56a792f0e739a6e350114adde2a14b2a32811ea6086ed83f9fda0"
     },
     {
       "path": "radio_sync.py",
-      "sha256": "52476a1cae3e9ada600d3331cfba79fa4653a84d2354b793c972c78516854a0b",
-      "size": 13893
+      "size": 13893,
+      "sha256": "52476a1cae3e9ada600d3331cfba79fa4653a84d2354b793c972c78516854a0b"
     },
     {
       "path": "launcher.py",
-      "sha256": "b0f5523ebc80ed37e0c4c2e8639aff3fb2a821f87a097fc9ed369aff4d425850",
-      "size": 98915
+      "size": 118948,
+      "sha256": "d4ba44e951f4ddd721d3d0598da5daa1f6f97699b7a4b30add6a11c1ab8d75e7"
     },
     {
       "path": "web_runtime.py",
-      "sha256": "a41dba28e33439f85c7494f6a55a6e813cb0cd1ac9efabf930283d02b3f34a52",
-      "size": 44974
+      "size": 58315,
+      "sha256": "59ebb80680d5e3b54cf674e8f2d1d6f00b28ee1aeddffdfbea97bc156106d110"
     },
     {
       "path": "web/index.html",
-      "sha256": "cd8f15040cb387010b2ce84444066a265a97dc877890c74eaf51ebcfbc0e7bc2",
-      "size": 30387
+      "size": 30644,
+      "sha256": "cb29e77915fca13555114804d83850397c767a3025039a8b44af8dd951822c30"
     }
   ],
   "schema": 1,
-  "version": "2.3.1"
+  "version": "2.4.0"
 }
