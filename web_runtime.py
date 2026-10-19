@@ -224,9 +224,13 @@ class LauncherApi:
     def _read_install_path(self) -> Path | None:
         try:
             path = Path(STATE_FILE.read_text(encoding="utf-8-sig").strip())
-            return path if path.is_dir() else None
+            if path.is_dir():
+                return path
         except (OSError, ValueError):
-            return None
+            pass
+        # One-click installation works on a fresh machine; users can still choose
+        # another drive before downloading the multi-gigabyte client.
+        return Path.home() / "Games"
 
     def _write_install_path(self, path: Path) -> None:
         STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
