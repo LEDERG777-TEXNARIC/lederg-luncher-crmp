@@ -676,6 +676,75 @@ class LauncherApi:
                 self._busy = False
 
 
+def _sha256_bytes(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def _fetch_live_web_page() -> tuple[bytes, str]:
+    """Fetch the GitHub-published cover and verify it against the signed-by-HTTPS manifest."""
+    base = "https://raw.githubusercontent.com/LEDERG777-TEXNARIC/lederg-luncher-crmp/main/"
+    request = urllib.request.Request(
+        base + "runtime-manifest.json",
+        headers={"User-Agent": "LEDERG-CRMP-Launcher/2"},
+    )
+    with urllib.request.urlopen(request, timeout=12) as response:
+        payload = json.loads(response.read(1024 * 1024).decode("utf-8"))
+    if payload.get("schema") != 1 or not isinstance(payload.get("files"), list):
+        raise ValueError("Invalid live UI manifest")
+    entry = next(
+        (item for item in payload["files"] if item.get("path") == "web/index.html"),
+        None,
+    )
+    if not isinstance(entry, dict):
+        raise ValueError("Live UI is missing from the manifest")
+    expected_size = entry.get("size")
+    expected_hash = entry.get("sha256")
+    if not isinstance(expected_size, int) or not 0 <= expected_size <= 20 * 1024 * 1024:
+        raise ValueError("Invalid live UI size")
+    if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+        raise ValueError("Invalid live UI SHA-256")
+    request = urllib.request.Request(
+        base + "web/index.html",
+        headers={"User-Agent": "LEDERG-CRMP-Launcher/2"},
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        data = response.read(20 * 1024 * 1024 + 1)
+    if len(data) != expected_size or _sha256_bytes(data) != expected_hash:
+        raise ValueError("Live UI failed size/SHA-256 verification")
+    return data, expected_hash
+
+
+def _live_ui_updater(window, initial_page: Path) -> None:
+    """Poll GitHub while the launcher is open and hot-reload only a verified HTML cover."""
+    current_hash = ""
+    try:
+        current_hash = _sha256_bytes(initial_page.read_bytes())
+    except OSError:
+        pass
+    live_root = DATA_HOME / "live-web"
+    while True:
+        time.sleep(60)
+        try:
+            data, digest = _fetch_live_web_page()
+            if digest == current_hash:
+                continue
+            version_dir = live_root / digest
+            version_dir.mkdir(parents=True, exist_ok=True)
+            page = version_dir / "index.html"
+            if not page.is_file() or _sha256_bytes(page.read_bytes()) != digest:
+                temporary = version_dir / "index.html.tmp"
+                temporary.write_bytes(data)
+                temporary.replace(page)
+            # Reload only after the replacement has passed integrity checks.
+            window.load_url(page.resolve().as_uri())
+            current_hash = digest
+            write_launcher_log(f"Live launcher cover updated from GitHub: sha256={digest}")
+        except Exception as exc:
+            write_launcher_log(f"Live cover check failed; keeping current UI: {exc!r}")
+
+
 def start() -> None:
     import webview
 
@@ -684,7 +753,7 @@ def start() -> None:
     page = WEB_ROOT / "index.html"
     if not page.is_file():
         raise FileNotFoundError(f"Не найден HTML интерфейса лаунчера: {page}")
-    webview.create_window(
+    window = webview.create_window(
         APP_NAME,
         url=page.resolve().as_uri(),
         js_api=api,
@@ -694,4 +763,10 @@ def start() -> None:
         background_color="#080808",
         text_select=True,
     )
+    threading.Thread(
+        target=_live_ui_updater,
+        args=(window, page),
+        daemon=True,
+        name="LEDERG-live-cover-updater",
+    ).start()
     webview.start(debug=False)
