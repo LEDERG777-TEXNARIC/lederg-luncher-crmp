@@ -27,6 +27,8 @@ from launcher import (
     SERVER_PORT,
     SERVER_IP_URL,
     ZIP_URL,
+    CLIENT_INTEGRITY_FILENAME,
+    ENB_DISABLED_BACKUP,
     build_direct_game_command,
     download_archive,
     download_client_folder,
@@ -37,6 +39,10 @@ from launcher import (
     load_server_address,
     parse_server_address,
     safe_extract_zip,
+    finalize_client_integrity_manifest,
+    inspect_client_installation,
+    extract_faulting_module,
+    quarantine_faulting_optional_module,
     sanitize_nickname,
     write_launcher_log,
     query_samp_server,
@@ -51,6 +57,8 @@ STATE_FILE = DATA_HOME / "install_location.txt"
 NICK_FILE = DATA_HOME / "nickname.txt"
 
 SERVER_FILE = DATA_HOME / "server_address.txt"
+AUTO_REPAIR_STATE_FILE = DATA_HOME / "auto-repair-state.json"
+AUTO_REPAIR_COOLDOWN_SECONDS = 24 * 60 * 60
 
 
 def parse_windows_crash_event_payload(
@@ -327,6 +335,14 @@ class LauncherApi:
         self._server_detail = "Проверяю доступность сервера…"
         self._server_checked_at = ""
         self._last_exit_code: int | None = None
+        self._client_health: dict = {
+            "healthy": False,
+            "root": "",
+            "issues": [],
+            "warnings": [],
+            "summary": "Автопроверка клиента запускается…",
+            "integrity_mode": "pending",
+        }
         self._nickname = self._read_text(NICK_FILE, "LEDERG")
         self._install_path = self._read_install_path()
         self._refresh_install_root()
@@ -398,6 +414,93 @@ class LauncherApi:
             and find_direct_game_client(selected)
         ) else None
 
+    @staticmethod
+    def _find_client_candidate(selected: Path | None) -> Path | None:
+        """Find a partly installed game folder even if a required executable is missing."""
+        if selected is None:
+            return None
+        candidates = (
+            selected,
+            selected / "GTA Criminal Russia",
+            selected / "GTA Criminal Russia" / "GTA Criminal Russia",
+        )
+        for candidate in candidates:
+            try:
+                if not candidate.is_dir():
+                    continue
+                if candidate.name.casefold() == "gta criminal russia" or any(
+                    (candidate / marker).exists()
+                    for marker in ("gta_sa.exe", "multiplayer_c", "models", "data")
+                ):
+                    return candidate
+            except OSError:
+                continue
+        return None
+
+    def _auto_repair_allowed(self, root: Path, reason: str) -> bool:
+        """Limit crash-triggered full archive repairs to one attempt per install/day."""
+        resolved = str(Path(root).resolve())
+        now = time.time()
+        with self._lock:
+            if self._busy:
+                return False
+            if self._process is not None and self._process.poll() is None:
+                return False
+            try:
+                previous = json.loads(AUTO_REPAIR_STATE_FILE.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                previous = {}
+            if (
+                str(previous.get("root") or "").casefold() == resolved.casefold()
+                and now - float(previous.get("attempted_at") or 0) < AUTO_REPAIR_COOLDOWN_SECONDS
+            ):
+                write_launcher_log(
+                    f"Automatic repair suppressed by 24h safety limit: root={resolved}; reason={reason}"
+                )
+                with self._lock:
+                    self._phase = "error"
+                    self._error = (
+                        "Автовосстановление уже запускалось за последние 24 часа. "
+                        "Проверь журнал или нажми «Переустановить» для ручного повтора."
+                    )
+                    self._status = self._error
+                return False
+            AUTO_REPAIR_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temporary = AUTO_REPAIR_STATE_FILE.with_name(AUTO_REPAIR_STATE_FILE.name + ".tmp")
+            temporary.write_text(
+                json.dumps({
+                    "root": resolved,
+                    "attempted_at": now,
+                    "reason": reason[:500],
+                }, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(temporary, AUTO_REPAIR_STATE_FILE)
+        return True
+
+    def _request_auto_repair(self, root: Path, reason: str) -> bool:
+        """Start one guarded full-client restore; never loop continuously on repeated crashes."""
+        if not self._auto_repair_allowed(root, reason):
+            write_launcher_log(
+                f"Automatic repair unavailable or throttled: root={root}; reason={reason}"
+            )
+            return False
+        write_launcher_log(
+            f"Automatic client repair requested: root={root}; reason={reason}"
+        )
+        with self._lock:
+            if self._game_root is None and (root / "gta_sa.exe").is_file():
+                self._game_root = root
+        result = self._begin_install(reinstall=True)
+        if not result.get("ok"):
+            write_launcher_log(f"Automatic client repair could not start: {result.get('message')}")
+            with self._lock:
+                self._phase = "error"
+                self._error = str(result.get("message") or "Не удалось начать автовосстановление.")
+                self._status = self._error
+            return False
+        return True
+
     def _refresh_server(self) -> None:
         try:
             host, port = load_server_address(SERVER_FILE)
@@ -452,19 +555,64 @@ class LauncherApi:
         try:
             with self._lock:
                 root = self._game_root
-            if root and find_direct_game_client(root):
+                selected = self._install_path
+            candidate = root or self._find_client_candidate(selected)
+            if not candidate:
                 with self._lock:
-                    self._status = "Клиент готов к запуску."
-                    self._progress = 100.0
-                    self._progress_label = "КЛИЕНТ ПРОВЕРЕН"
-                    self._phase = "ready"
-            else:
-                with self._lock:
-                    self._status = "Выбери папку с игрой или скачай клиент."
+                    self._client_health = {
+                        "healthy": False,
+                        "root": "",
+                        "issues": [],
+                        "warnings": [],
+                        "summary": "Игровая папка ещё не выбрана.",
+                        "integrity_mode": "pending",
+                    }
+                    self._status = "Выбери папку игры или скачай клиент."
                     self._phase = "idle"
-        except Exception as exc:
+                return
+
+            report = inspect_client_installation(
+                candidate,
+                progress_callback=lambda done, total, name: self._set_progress(
+                    "integrity", done, total, f"Проверяю файлы: {name}"
+                ),
+            )
             with self._lock:
-                self._status = f"Проверка клиента: {exc}"
+                self._client_health = report
+            write_launcher_log(
+                f"Client self-check: root={candidate}; healthy={report['healthy']}; "
+                f"mode={report.get('integrity_mode')}; checked_hashes={report.get('checked_files')}; "
+                f"issues={report.get('issues')!r}; warnings={report.get('warnings')!r}"
+            )
+            if report["healthy"]:
+                with self._lock:
+                    self._game_root = candidate if (candidate / "gta_sa.exe").is_file() else self._game_root
+                    self._status = (
+                        "Клиент проверен и готов к запуску."
+                        if report.get("integrity_mode") != "structural-only"
+                        else "Структура клиента исправна; контрольные суммы ещё не созданы."
+                    )
+                    self._progress = 100.0
+                    self._progress_label = "АВТОПРОВЕРКА ПРОЙДЕНА"
+                    self._phase = "ready"
+                    self._error = ""
+                return
+
+            reason = "; ".join(report["issues"][:5])
+            if self._request_auto_repair(candidate, reason or "client integrity check failed"):
+                return
+            with self._lock:
+                self._status = (
+                    "Обнаружены ошибки клиента, но автоматическое восстановление не запущено. "
+                    "Открой журнал или нажми «Переустановить»."
+                )
+                self._error = self._status
+                self._phase = "error"
+        except Exception as exc:
+            write_launcher_log("Client self-check failed: " + traceback.format_exc())
+            with self._lock:
+                self._status = f"Ошибка автопроверки клиента: {exc}"
+                self._error = self._status
                 self._phase = "error"
 
     def get_state(self) -> dict:
@@ -486,9 +634,15 @@ class LauncherApi:
             server_detail = self._server_detail
             server_checked_at = self._server_checked_at
             last_exit_code = self._last_exit_code
+            health = dict(self._client_health)
         runtime = find_direct_game_client(root) if root else None
         browser = find_client(root) if root else None
-        client_ready = bool(root and (root / "gta_sa.exe").is_file() and runtime)
+        client_ready = bool(
+            root
+            and health.get("healthy")
+            and (root / "gta_sa.exe").is_file()
+            and runtime
+        )
         display_path = str(root or selected) if (root or selected) else ""
         return {
             "client_ready": client_ready,
@@ -508,6 +662,11 @@ class LauncherApi:
             "server_detail": server_detail,
             "server_checked_at": server_checked_at,
             "last_exit_code": last_exit_code,
+            "client_health_ok": bool(health.get("healthy")),
+            "client_health_summary": str(health.get("summary") or ""),
+            "client_health_issues": list(health.get("issues") or []),
+            "client_health_warnings": list(health.get("warnings") or []),
+            "client_integrity_mode": str(health.get("integrity_mode") or "pending"),
         }
 
     def set_nickname(self, nickname: str) -> dict:
