@@ -10,6 +10,7 @@ from pathlib import Path
 from launcher import (
     CLIENT_INTEGRITY_FILENAME,
     extract_faulting_module,
+    extract_faulting_module_path,
     finalize_client_integrity_manifest,
     inspect_client_installation,
     quarantine_faulting_optional_module,
@@ -148,13 +149,19 @@ class ClientSelfCheckTests(unittest.TestCase):
         self.assertEqual(paths, {"data/handling.cfg", "multiplayer_c/san_andreas_multiplayer.dll"})
         self.assertEqual(payload["source"], "google-drive-archive")
 
-    def test_faulting_module_is_extracted_from_windows_event_text(self):
-        module = extract_faulting_module(
-            "Faulting application name: gta_sa.exe, Faulting module name: d3d9.dll, Exception code: 0xc0000005"
+    def test_faulting_module_name_and_path_are_extracted_from_windows_event_text(self):
+        event = (
+            "Faulting application name: gta_sa.exe, "
+            "Faulting module name: d3d9.dll, Exception code: 0xc0000005\\n"
+            "Faulting module path: C:\\Games\\GTA Criminal Russia\\d3d9.dll"
         )
-        self.assertEqual(module, "d3d9.dll")
+        self.assertEqual(extract_faulting_module(event), "d3d9.dll")
+        self.assertEqual(
+            extract_faulting_module_path(event),
+            "C:\\Games\\GTA Criminal Russia\\d3d9.dll",
+        )
 
-    def test_only_confirmed_enb_d3d9_proxy_is_quarantined_and_backed_up(self):
+    def test_only_confirmed_local_enb_d3d9_proxy_is_quarantined(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "enbseries.ini").write_text("[GLOBAL]", encoding="utf-8")
@@ -162,12 +169,33 @@ class ClientSelfCheckTests(unittest.TestCase):
             proxy = root / "d3d9.dll"
             proxy.write_bytes(b"legacy ENB proxy")
 
-            backup = quarantine_faulting_optional_module(root, "d3d9.dll")
+            backup = quarantine_faulting_optional_module(
+                root, "d3d9.dll", str(proxy)
+            )
 
             self.assertEqual(backup, root / "d3d9.dll.lederg-disabled.bak")
             self.assertFalse(proxy.exists())
             self.assertEqual(backup.read_bytes(), b"legacy ENB proxy")
-            self.assertIsNone(quarantine_faulting_optional_module(root, "d3d9.dll"))
+            self.assertIsNone(
+                quarantine_faulting_optional_module(
+                    root, "d3d9.dll", str(root / "d3d9.dll")
+                )
+            )
+
+    def test_does_not_disable_local_enb_when_windows_reports_system_d3d9(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "enbseries.ini").write_text("[GLOBAL]", encoding="utf-8")
+            (root / "ENBSeries_License.txt").write_text("test license", encoding="utf-8")
+            proxy = root / "d3d9.dll"
+            proxy.write_bytes(b"legacy ENB proxy")
+
+            backup = quarantine_faulting_optional_module(
+                root, "d3d9.dll", r"C:\\Windows\\System32\\d3d9.dll"
+            )
+
+        self.assertIsNone(backup)
+        self.assertTrue(proxy.exists())
 
 
 if __name__ == "__main__":
