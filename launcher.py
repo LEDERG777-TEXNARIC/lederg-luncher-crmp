@@ -56,14 +56,26 @@ DIRECT_LAUNCHER_NAME = "LEDERG-DirectLaunch.exe"
 
 CLIENT_INTEGRITY_FILENAME = ".lederg-client-integrity.json"
 CLIENT_REQUIRED_DIRECTORIES = (
+    "anim",
     "audio",
+    "audio/CONFIG",
+    "audio/SFX",
+    "audio/streams",
+    "cleo",
     "data",
     "models",
+    "movies",
     "text",
     "multiplayer_c",
 )
 CLIENT_REQUIRED_FILES = (
     "gta_sa.exe",
+    "cleo.asi",
+    "eax.dll",
+    "GTAINTERFACE.dll",
+    "LibMP.dll",
+    "ogg.dll",
+    "anim/anim.img",
     "multiplayer_c/multiplayer_browser_cr.exe",
     "multiplayer_c/grand_theft_auto_san_andreas.dll",
     "multiplayer_c/san_andreas_multiplayer.dll",
@@ -74,6 +86,11 @@ CLIENT_REQUIRED_FILES = (
 )
 CLIENT_PE_FILES = (
     "gta_sa.exe",
+    "cleo.asi",
+    "eax.dll",
+    "GTAINTERFACE.dll",
+    "LibMP.dll",
+    "ogg.dll",
     "multiplayer_c/multiplayer_browser_cr.exe",
     "multiplayer_c/grand_theft_auto_san_andreas.dll",
     "multiplayer_c/san_andreas_multiplayer.dll",
