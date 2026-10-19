@@ -80,6 +80,40 @@ class AutomaticRepairGuardTests(unittest.TestCase):
             self.assertTrue(allowed)
             self.assertEqual(json.loads(guard.read_text(encoding="utf-8"))["result"], "in_progress")
 
+    def test_legacy_client_without_trusted_hashes_triggers_one_time_repair(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "GTA Criminal Russia"
+            root.mkdir()
+            api = self.make_api_stub(root)
+            api._checking_client = False
+            api._client_health = {}
+            api._progress = 0.0
+            api._progress_label = ""
+            api._current_file = ""
+
+            healthy_legacy_report = {
+                "healthy": True,
+                "root": str(root),
+                "issues": [],
+                "warnings": ["no trusted integrity baseline"],
+                "summary": "structure only",
+                "integrity_mode": "structural-only",
+                "checked_files": 0,
+            }
+
+            with (
+                patch("web_runtime.inspect_client_installation", return_value=healthy_legacy_report),
+                patch("web_runtime.collect_windows_crash_events", return_value=[]),
+                patch("web_runtime.select_client_crash_events", return_value=[]),
+                patch.object(LauncherApi, "_request_auto_repair", return_value=True) as request,
+                patch("web_runtime.write_launcher_log"),
+            ):
+                LauncherApi._startup_check(api)
+
+            request.assert_called_once()
+            self.assertEqual(request.call_args.args[0], root)
+            self.assertIn("integrity baseline", request.call_args.args[1])
+
     def test_repair_is_not_started_while_game_process_is_running(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "GTA Criminal Russia"
