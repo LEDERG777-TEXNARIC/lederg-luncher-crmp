@@ -441,6 +441,19 @@ class LauncherApi:
         except Exception as exc:
             return {"ok": False, "message": f"Путь установки не сохранён: {exc}", "state": self.get_state()}
 
+    def open_log(self) -> dict:
+        """Open the launcher diagnostics so users can share the exact crash context."""
+        path = DATA_HOME / "launcher.log"
+        try:
+            DATA_HOME.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                write_launcher_log("Launcher log opened before any diagnostics were recorded.")
+            os.startfile(str(path))
+            return {"ok": True, "message": "Открыл журнал LEDERG CR:MP."}
+        except Exception as exc:
+            write_launcher_log(f"Could not open launcher log: {exc!r}")
+            return {"ok": False, "message": f"Не удалось открыть журнал: {exc}"}
+
     def open_game_folder(self) -> dict:
         with self._lock:
             root = self._game_root or self._install_path
