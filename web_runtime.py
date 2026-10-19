@@ -745,6 +745,32 @@ class LauncherApi:
             endpoint = self._endpoint
         if not root:
             return {"ok": False, "message": "Не найдена папка игры. Выбери папку или скачай клиент."}
+        health = inspect_client_installation(
+            root,
+            progress_callback=lambda done, total, name: self._set_progress(
+                "integrity", done, total, f"Проверяю перед запуском: {name}"
+            ),
+        )
+        with self._lock:
+            self._client_health = health
+        if not health["healthy"]:
+            reason = "; ".join(health["issues"][:5])
+            write_launcher_log(
+                f"Pre-launch check rejected the client: root={root}; issues={health['issues']!r}"
+            )
+            if self._request_auto_repair(root, reason or "pre-launch integrity failure"):
+                return {
+                    "ok": True,
+                    "message": "Нашёл повреждённые файлы и запустил автоматическое восстановление.",
+                }
+            return {
+                "ok": False,
+                "message": (
+                    "Проверка перед запуском обнаружила ошибки. "
+                    "Автовосстановление ограничено защитой от повторных циклов; "
+                    "используй «Переустановить» или открой журнал."
+                ),
+            }
         runtime = find_direct_game_client(root)
         if not (root / "gta_sa.exe").is_file() or not runtime:
             return {
