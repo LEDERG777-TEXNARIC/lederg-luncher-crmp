@@ -12,20 +12,20 @@
     },
     {
       "path": "launcher.py",
-      "sha256": "35c7e2963f970a4f1ecc6bb967cadd10a0fa1c9cc5284e850d4cd41bee9493d3",
-      "size": 120022
+      "sha256": "e6e4bc8da288bf89a4c7ff4e5d6b99b9059ff014e4a9bf87b1778c331b41b01e",
+      "size": 120695
     },
     {
       "path": "web_runtime.py",
-      "sha256": "7c219e974f6a57d6cc03211c76facb1ed671871cf5efee8e5c35ab057d9ed850",
-      "size": 62957
+      "sha256": "74f835a1b7a4f0f43bcb14cf0899bc9fe7483c54b84fcdca30c5614bed9107e6",
+      "size": 67474
     },
     {
       "path": "web/index.html",
-      "sha256": "cb29e77915fca13555114804d83850397c767a3025039a8b44af8dd951822c30",
+      "sha256": "d091409244ee69f37b57c72ca0dbd7b806142fb151aed7db4321f7f4f09b068f",
       "size": 30644
     }
   ],
   "schema": 1,
-  "version": "2.4.0"
+  "version": "2.5.0"
 }
