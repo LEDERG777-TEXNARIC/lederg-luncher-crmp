@@ -742,13 +742,14 @@ class LauncherApi:
                     for event in events:
                         write_launcher_log(event)
                     with self._lock:
-                        original = self._error or self._status
-                        self._error = original.replace(
-                            "Если повторится, нужен журнал Windows «Приложение» "
-                            "с именем сбойного модуля.",
-                            "Событие Windows записано в «ЖУРНАЛ» лаунчера.",
-                        )
-                        self._status = self._error
+                        if self._process is None and self._last_exit_code == int(code):
+                            original = self._error or self._status
+                            self._error = original.replace(
+                                "Если повторится, нужен журнал Windows «Приложение» "
+                                "с именем сбойного модуля.",
+                                "Событие Windows записано в «ЖУРНАЛ» лаунчера.",
+                            )
+                            self._status = self._error
                     write_launcher_log(
                         "Windows crash-event diagnostics collected automatically; "
                         "see launcher.log for the faulting application/module."
