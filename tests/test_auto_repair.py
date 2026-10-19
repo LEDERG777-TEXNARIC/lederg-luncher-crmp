@@ -80,6 +80,34 @@ class AutomaticRepairGuardTests(unittest.TestCase):
             self.assertTrue(allowed)
             self.assertEqual(json.loads(guard.read_text(encoding="utf-8"))["result"], "in_progress")
 
+    def test_old_guard_record_without_result_can_retry_after_failure_cooldown(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "GTA Criminal Russia"
+            root.mkdir()
+            guard = Path(temp) / "auto-repair-state.json"
+            now = 1_800_000_000.0
+            # Version 2.4.0 recorded only these fields. If the same client
+            # still lacks a trusted hash ledger, assume this prior attempt failed.
+            guard.write_text(json.dumps({
+                "root": str(root.resolve()),
+                "attempted_at": now - web_runtime.AUTO_REPAIR_FAILURE_RETRY_SECONDS - 1,
+                "reason": "legacy repair attempt",
+            }), encoding="utf-8")
+            api = self.make_api_stub(root)
+
+            with (
+                patch("web_runtime.AUTO_REPAIR_STATE_FILE", guard),
+                patch("web_runtime.time.time", return_value=now),
+                patch("web_runtime.write_launcher_log"),
+            ):
+                allowed = api._auto_repair_allowed(root, "legacy guard migration")
+
+            self.assertTrue(
+                allowed,
+                "An old failed-repair guard should use the short retry cooldown, not the 24-hour success cooldown.",
+            )
+            self.assertEqual(json.loads(guard.read_text(encoding="utf-8"))["result"], "in_progress")
+
     def test_legacy_client_without_trusted_hashes_triggers_one_time_repair(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "GTA Criminal Russia"
