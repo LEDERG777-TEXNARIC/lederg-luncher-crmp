@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import web_runtime
+
 from web_runtime import LauncherApi
 
 
@@ -44,6 +46,73 @@ class AutomaticRepairGuardTests(unittest.TestCase):
             self.assertEqual(state["root"], str(root.resolve()))
             self.assertEqual(state["reason"], "startup integrity")
             self.assertIn("24 часа", api._error)
+            self.assertEqual(state["result"], "in_progress")
+
+    def test_failed_repair_uses_short_retry_cooldown_instead_of_full_day(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "GTA Criminal Russia"
+            root.mkdir()
+            guard = Path(temp) / "auto-repair-state.json"
+            now = 1_800_000_000.0
+            guard.write_text(json.dumps({
+                "root": str(root.resolve()),
+                "attempted_at": now - 30,
+                "reason": "archive download failed",
+                "result": "failed",
+            }), encoding="utf-8")
+            api = self.make_api_stub(root)
+
+            with (
+                patch("web_runtime.AUTO_REPAIR_STATE_FILE", guard),
+                patch("web_runtime.time.time", return_value=now),
+                patch("web_runtime.write_launcher_log"),
+            ):
+                blocked = api._auto_repair_allowed(root, "same damaged files")
+                self.assertFalse(blocked)
+                self.assertIn("мин", api._error)
+
+                guard_payload = json.loads(guard.read_text(encoding="utf-8"))
+                guard_payload["attempted_at"] = now - web_runtime.AUTO_REPAIR_FAILURE_RETRY_SECONDS - 1
+                guard.write_text(json.dumps(guard_payload), encoding="utf-8")
+
+                allowed = api._auto_repair_allowed(root, "retry failed repair")
+
+            self.assertTrue(allowed)
+            self.assertEqual(json.loads(guard.read_text(encoding="utf-8"))["result"], "in_progress")
+
+    def test_legacy_client_without_trusted_hashes_triggers_one_time_repair(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "GTA Criminal Russia"
+            root.mkdir()
+            api = self.make_api_stub(root)
+            api._checking_client = False
+            api._client_health = {}
+            api._progress = 0.0
+            api._progress_label = ""
+            api._current_file = ""
+
+            healthy_legacy_report = {
+                "healthy": True,
+                "root": str(root),
+                "issues": [],
+                "warnings": ["no trusted integrity baseline"],
+                "summary": "structure only",
+                "integrity_mode": "structural-only",
+                "checked_files": 0,
+            }
+
+            with (
+                patch("web_runtime.inspect_client_installation", return_value=healthy_legacy_report),
+                patch("web_runtime.collect_windows_crash_events", return_value=[]),
+                patch("web_runtime.select_client_crash_events", return_value=[]),
+                patch.object(LauncherApi, "_request_auto_repair", return_value=True) as request,
+                patch("web_runtime.write_launcher_log"),
+            ):
+                LauncherApi._startup_check(api)
+
+            request.assert_called_once()
+            self.assertEqual(request.call_args.args[0], root)
+            self.assertIn("SHA-256 baseline", request.call_args.args[1])
 
     def test_repair_is_not_started_while_game_process_is_running(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -77,7 +146,7 @@ class AutomaticRepairGuardTests(unittest.TestCase):
                 started = LauncherApi._request_auto_repair(api, root, "integrity mismatch")
 
             self.assertTrue(started)
-            begin.assert_called_once_with(reinstall=True)
+            begin.assert_called_once_with(reinstall=True, auto_repair_root=root)
 
 
 if __name__ == "__main__":

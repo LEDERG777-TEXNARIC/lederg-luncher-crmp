@@ -211,7 +211,7 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
       </button>
 
       <div class="secondary-actions" id="secondaryActions" hidden>
-        <div class="secondary-copy"><strong>КЛИЕНТ УСТАНОВЛЕН, НО РАБОТАЕТ НЕСТАБИЛЬНО?</strong><span>Перекачать официальный архив с Google Drive и восстановить игровые файлы.</span></div>
+        <div class="secondary-copy"><strong>КЛИЕНТ НУЖДАЕТСЯ В ВОССТАНОВЛЕНИИ?</strong><span>Повторно проверить клиент и восстановить файлы из официального архива Google Drive.</span></div>
         <button class="reinstall-button" id="reinstallButton"><span aria-hidden="true">↻</span> ПЕРЕУСТАНОВИТЬ</button>
       </div>
 
@@ -223,7 +223,7 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
   </main>
 
   <footer class="footer">
-    <div>LEDERG <strong>CR:MP</strong> &nbsp;·&nbsp; BUILD <strong>2.4</strong></div>
+    <div>LEDERG <strong>CR:MP</strong> &nbsp;·&nbsp; BUILD <strong>2.5</strong></div>
     <div class="footer-right"><span id="clientBadge">CLIENT CHECK</span><button class="footer-link" id="openLog">ЖУРНАЛ</button><button class="footer-link" id="changeFolder">ИЗМЕНИТЬ ПАПКУ</button></div>
   </footer>
 </div>
@@ -267,6 +267,7 @@ function applyState(state) {
   if (!state || typeof state !== "object") return;
   latestState = state;
   const ready = Boolean(state.client_ready);
+  const clientFound = Boolean(state.client_found);
   const working = Boolean(state.busy);
   const progress = Math.max(0, Math.min(100, Number(state.progress || 0)));
   $("endpoint").textContent = state.endpoint || "АДРЕС НЕ НАЙДЕН";
@@ -300,7 +301,7 @@ function applyState(state) {
       : "ПРОВЕРЯЮ СЕРВЕР…");
   $("statusLight").classList.toggle("good", ready && !working);
   $("statusLight").classList.toggle("bad", state.phase === "error");
-  $("secondaryActions").hidden = !ready;
+  $("secondaryActions").hidden = !(ready || clientFound);
   $("reinstallButton").disabled = working || actionPending;
   $("statusText").textContent = state.error || state.status || (ready ? "Клиент установлен. Можно играть." : "Готов к установке.");
   $("progressLabel").textContent = state.progress_label || (ready ? "ГОТОВ К ЗАПУСКУ" : "КЛИЕНТ НЕ УСТАНОВЛЕН");
@@ -323,6 +324,10 @@ function applyState(state) {
     $("playLabel").textContent = "ИГРАТЬ";
     $("buttonHint").textContent = "КЛИЕНТ УСТАНОВЛЕН · DIRECT CONNECT";
     $("buttonArrow").textContent = "↗";
+  } else if (clientFound) {
+    $("playLabel").textContent = "ВОССТАНОВИТЬ";
+    $("buttonHint").textContent = "АВТОПРОВЕРКА · ИСПРАВЛЕНИЕ ФАЙЛОВ";
+    $("buttonArrow").textContent = "↻";
   } else {
     $("playLabel").textContent = "УСТАНОВИТЬ";
     $("buttonHint").textContent = "ПОЛНЫЙ КЛИЕНТ · GOOGLE DRIVE";
@@ -363,7 +368,9 @@ $("playButton").addEventListener("click", async () => {
   await apiCall("set_nickname", nickname);
   const result = latestState.client_ready
     ? await apiCall("launch_game", nickname)
-    : await apiCall("start_install");
+    : (latestState.client_found
+      ? await apiCall("reinstall_client")
+      : await apiCall("start_install"));
   if (result && result.message) toast(result.message);
   await refreshState();
   setBusy(false);

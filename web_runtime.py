@@ -61,6 +61,7 @@ NICK_FILE = DATA_HOME / "nickname.txt"
 SERVER_FILE = DATA_HOME / "server_address.txt"
 AUTO_REPAIR_STATE_FILE = DATA_HOME / "auto-repair-state.json"
 AUTO_REPAIR_COOLDOWN_SECONDS = 24 * 60 * 60
+AUTO_REPAIR_FAILURE_RETRY_SECONDS = 15 * 60
 
 
 def parse_windows_crash_event_payload(
@@ -457,19 +458,33 @@ class LauncherApi:
                 previous_attempt = float(previous.get("attempted_at") or 0)
             except (TypeError, ValueError):
                 previous_attempt = 0.0
-            if (
-                str(previous.get("root") or "").casefold() == resolved.casefold()
-                and now - previous_attempt < AUTO_REPAIR_COOLDOWN_SECONDS
-            ):
-                write_launcher_log(
-                    f"Automatic repair suppressed by 24h safety limit: root={resolved}; reason={reason}"
-                )
-                with self._lock:
-                    self._phase = "error"
-                    self._error = (
+            same_install = str(previous.get("root") or "").casefold() == resolved.casefold()
+            previous_result = str(previous.get("result") or "in_progress").casefold()
+            cooldown = (
+                AUTO_REPAIR_FAILURE_RETRY_SECONDS
+                if previous_result == "failed"
+                else AUTO_REPAIR_COOLDOWN_SECONDS
+            )
+            if same_install and now - previous_attempt < cooldown:
+                retry_minutes = max(1, int((cooldown - max(0.0, now - previous_attempt) + 59) // 60))
+                if previous_result == "failed":
+                    message = (
+                        "Автовосстановление завершилось ошибкой. "
+                        f"Следующая автоматическая попытка будет не раньше чем через {retry_minutes} мин; "
+                        "для повтора сразу нажми «Переустановить»."
+                    )
+                else:
+                    message = (
                         "Автовосстановление уже запускалось за последние 24 часа. "
                         "Проверь журнал или нажми «Переустановить» для ручного повтора."
                     )
+                write_launcher_log(
+                    f"Automatic repair suppressed: root={resolved}; result={previous_result}; "
+                    f"cooldown_seconds={cooldown}; reason={reason}"
+                )
+                with self._lock:
+                    self._phase = "error"
+                    self._error = message
                     self._status = self._error
                 return False
             AUTO_REPAIR_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -479,11 +494,40 @@ class LauncherApi:
                     "root": resolved,
                     "attempted_at": now,
                     "reason": reason[:500],
+                    "result": "in_progress",
                 }, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
             os.replace(temporary, AUTO_REPAIR_STATE_FILE)
         return True
+
+    def _finish_auto_repair_attempt(
+        self, root: Path, *, succeeded: bool, detail: str
+    ) -> None:
+        """Record whether a guarded automatic repair actually produced a verified client."""
+        resolved = str(Path(root).resolve())
+        try:
+            payload = json.loads(AUTO_REPAIR_STATE_FILE.read_text(encoding="utf-8"))
+            if str(payload.get("root") or "").casefold() != resolved.casefold():
+                write_launcher_log(
+                    f"Skipped auto-repair result update because the guard now points elsewhere: {resolved}"
+                )
+                return
+            payload["result"] = "succeeded" if succeeded else "failed"
+            payload["finished_at"] = time.time()
+            payload["detail"] = str(detail or "")[:1000]
+            temporary = AUTO_REPAIR_STATE_FILE.with_name(AUTO_REPAIR_STATE_FILE.name + ".tmp")
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(temporary, AUTO_REPAIR_STATE_FILE)
+            write_launcher_log(
+                f"Automatic repair result recorded: root={resolved}; "
+                f"result={payload['result']}; detail={payload['detail']!r}"
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            write_launcher_log(f"Could not record automatic repair result for {resolved}: {exc!r}")
 
     def _request_auto_repair(self, root: Path, reason: str) -> bool:
         """Start one guarded full-client restore; never loop continuously on repeated crashes."""
@@ -498,12 +542,14 @@ class LauncherApi:
         with self._lock:
             if self._game_root is None and (root / "gta_sa.exe").is_file():
                 self._game_root = root
-        result = self._begin_install(reinstall=True)
+        result = self._begin_install(reinstall=True, auto_repair_root=root)
         if not result.get("ok"):
-            write_launcher_log(f"Automatic client repair could not start: {result.get('message')}")
+            message = str(result.get("message") or "Не удалось начать автовосстановление.")
+            self._finish_auto_repair_attempt(root, succeeded=False, detail=message)
+            write_launcher_log(f"Automatic client repair could not start: {message}")
             with self._lock:
                 self._phase = "error"
-                self._error = str(result.get("message") or "Не удалось начать автовосстановление.")
+                self._error = message
                 self._status = self._error
             return False
         return True
@@ -662,13 +708,37 @@ class LauncherApi:
                         self._phase = "error"
                     return
 
+                if report.get("integrity_mode") == "structural-only":
+                    reason = (
+                        "Legacy client has no trusted integrity inventory; "
+                        "establish a SHA-256 baseline from the pinned official archive"
+                    )
+                    write_launcher_log(
+                        f"Legacy client needs a trusted integrity baseline; starting one-time repair: "
+                        f"root={candidate}"
+                    )
+                    if self._request_auto_repair(candidate, reason):
+                        return
+                    report = dict(report)
+                    report["healthy"] = False
+                    report["issues"] = list(report.get("issues") or []) + [
+                        "Нет доверенного манифеста контрольных сумм; клиент нельзя считать полностью проверенным."
+                    ]
+                    report["summary"] = (
+                        "Нужна полная проверка: автоматическое восстановление не запущено. "
+                        "Открой журнал или нажми «Переустановить»."
+                    )
+                    with self._lock:
+                        self._client_health = report
+                        self._game_root = candidate
+                        self._status = report["summary"]
+                        self._error = self._status
+                        self._phase = "error"
+                    return
+
                 with self._lock:
                     self._game_root = candidate if (candidate / "gta_sa.exe").is_file() else self._game_root
-                    self._status = (
-                        "Клиент проверен и готов к запуску."
-                        if report.get("integrity_mode") != "structural-only"
-                        else "Структура клиента исправна; контрольные суммы ещё не созданы."
-                    )
+                    self._status = "Клиент проверен и готов к запуску."
                     self._progress = 100.0
                     self._progress_label = "АВТОПРОВЕРКА ПРОЙДЕНА"
                     self._phase = "ready"
@@ -717,15 +787,18 @@ class LauncherApi:
             health = dict(self._client_health)
         runtime = find_direct_game_client(root) if root else None
         browser = find_client(root) if root else None
+        client_candidate = root or self._find_client_candidate(selected)
+        client_found = bool(client_candidate and client_candidate.is_dir())
         client_ready = bool(
             root
             and health.get("healthy")
             and (root / "gta_sa.exe").is_file()
             and runtime
         )
-        display_path = str(root or selected) if (root or selected) else ""
+        display_path = str(root or client_candidate or selected) if (root or client_candidate or selected) else ""
         return {
             "client_ready": client_ready,
+            "client_found": client_found,
             "install_path": display_path,
             "endpoint": endpoint,
             "nickname": nickname,
@@ -1082,7 +1155,9 @@ class LauncherApi:
         """Re-download the official Drive archive and restore files over the installation."""
         return self._begin_install(reinstall=True)
 
-    def _begin_install(self, *, reinstall: bool) -> dict:
+    def _begin_install(
+        self, *, reinstall: bool, auto_repair_root: Path | None = None
+    ) -> dict:
         with self._lock:
             if self._busy:
                 return {"ok": False, "message": "Установка уже выполняется."}
@@ -1108,7 +1183,7 @@ class LauncherApi:
         )
         threading.Thread(
             target=self._install_worker,
-            args=(selected, reinstall),
+            args=(selected, reinstall, auto_repair_root),
             daemon=True,
             name="LEDERG-reinstall" if reinstall else "LEDERG-install",
         ).start()
@@ -1131,8 +1206,14 @@ class LauncherApi:
             else:
                 self._progress_label = "ПРОВЕРКА ФАЙЛОВ"
 
-    def _install_worker(self, selected: Path, reinstall: bool = False) -> None:
+    def _install_worker(
+        self,
+        selected: Path,
+        reinstall: bool = False,
+        auto_repair_root: Path | None = None,
+    ) -> None:
         archive: Path | None = None
+        repair_succeeded = False
         integrity_inventory = DATA_HOME / "pending-client-integrity.json"
         try:
             with self._lock:
@@ -1247,6 +1328,7 @@ class LauncherApi:
                     f"Google Drive client installation completed and verified: "
                     f"root={root}; files={count}; health={health!r}"
                 )
+                repair_succeeded = True
                 return
 
             install_name = str(manifest.get("install_root", "GTA Criminal Russia"))
@@ -1291,6 +1373,7 @@ class LauncherApi:
                 self._phase = "ready"
                 self._error = ""
             write_launcher_log(f"Client update completed: root={root}; files={count}")
+            repair_succeeded = True
         except Exception as exc:
             write_launcher_log(f"ERROR updating client: {traceback.format_exc()}")
             with self._lock:
@@ -1303,6 +1386,14 @@ class LauncherApi:
                 integrity_inventory.with_name(integrity_inventory.name + ".tmp").unlink(missing_ok=True)
             except OSError:
                 pass
+            if auto_repair_root is not None:
+                with self._lock:
+                    detail = self._error or self._status
+                self._finish_auto_repair_attempt(
+                    auto_repair_root,
+                    succeeded=repair_succeeded,
+                    detail=detail,
+                )
             with self._lock:
                 self._busy = False
 
