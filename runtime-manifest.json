@@ -1,4 +1,6 @@
 {
+  "schema": 1,
+  "version": "2.4.0",
   "files": [
     {
       "path": "client_updates.py",
@@ -6,26 +8,24 @@
       "sha256": "597add7ec9b56a792f0e739a6e350114adde2a14b2a32811ea6086ed83f9fda0"
     },
     {
+      "path": "launcher.py",
+      "size": 120024,
+      "sha256": "76cd883c3929bd2434bc65e960151542860cfc8338b854c1dd3545cc7aa31563"
+    },
+    {
       "path": "radio_sync.py",
       "size": 13893,
       "sha256": "52476a1cae3e9ada600d3331cfba79fa4653a84d2354b793c972c78516854a0b"
     },
     {
-      "path": "launcher.py",
-      "size": 118948,
-      "sha256": "d4ba44e951f4ddd721d3d0598da5daa1f6f97699b7a4b30add6a11c1ab8d75e7"
-    },
-    {
       "path": "web_runtime.py",
-      "size": 58315,
-      "sha256": "59ebb80680d5e3b54cf674e8f2d1d6f00b28ee1aeddffdfbea97bc156106d110"
+      "size": 62957,
+      "sha256": "7c219e974f6a57d6cc03211c76facb1ed671871cf5efee8e5c35ab057d9ed850"
     },
     {
       "path": "web/index.html",
       "size": 30644,
       "sha256": "cb29e77915fca13555114804d83850397c767a3025039a8b44af8dd951822c30"
     }
-  ],
-  "schema": 1,
-  "version": "2.4.0"
+  ]
 }
