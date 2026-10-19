@@ -30,6 +30,16 @@ REQUIRED_FILES = (
     "multiplayer_c/multiplayer_browser_cr.exe",
     "multiplayer_c/grand_theft_auto_san_andreas.dll",
     "multiplayer_c/san_andreas_multiplayer.dll",
+    "multiplayer_c/adapt.dll",
+    "multiplayer_c/adaptation_helper.dll",
+    "multiplayer_c/bass.dll",
+    "multiplayer_c/eax.dll",
+    "multiplayer_c/ogg.dll",
+    "multiplayer_c/vorbis.dll",
+    "multiplayer_c/vorbisFile.dll",
+    "vorbis.dll",
+    "vorbisFile.dll",
+    "vorbisHooked.dll",
     "data/handling.cfg", "models/gta3.img", "models/gamemod.img", "text/american.gxt",
 )
 PE_FILES = (
@@ -37,6 +47,16 @@ PE_FILES = (
     "multiplayer_c/multiplayer_browser_cr.exe",
     "multiplayer_c/grand_theft_auto_san_andreas.dll",
     "multiplayer_c/san_andreas_multiplayer.dll",
+    "multiplayer_c/adapt.dll",
+    "multiplayer_c/adaptation_helper.dll",
+    "multiplayer_c/bass.dll",
+    "multiplayer_c/eax.dll",
+    "multiplayer_c/ogg.dll",
+    "multiplayer_c/vorbis.dll",
+    "multiplayer_c/vorbisFile.dll",
+    "vorbis.dll",
+    "vorbisFile.dll",
+    "vorbisHooked.dll",
 )
 
 
