@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -62,6 +63,162 @@ SERVER_FILE = DATA_HOME / "server_address.txt"
 AUTO_REPAIR_STATE_FILE = DATA_HOME / "auto-repair-state.json"
 AUTO_REPAIR_COOLDOWN_SECONDS = 24 * 60 * 60
 AUTO_REPAIR_FAILURE_RETRY_SECONDS = 15 * 60
+
+_REPAIR_PHASE_LABELS = {
+    "manifest": "ПОДГОТОВКА ВОССТАНОВЛЕНИЯ",
+    "download": "СКАЧИВАНИЕ АРХИВА",
+    "extract": "РАСПАКОВКА АРХИВА",
+    "integrity": "ПРОВЕРКА ЦЕЛОСТНОСТИ",
+    "schedule": "ЗАПУСК АВТОВОССТАНОВЛЕНИЯ",
+    "repair": "АВТОВОССТАНОВЛЕНИЕ",
+    "error": "ОШИБКА ВОССТАНОВЛЕНИЯ",
+    "ready": "ПРОВЕРКА КЛИЕНТА",
+}
+
+
+def diagnose_auto_repair_failure(detail: str, phase: str = "") -> dict:
+    """Turn the installer exception into a plain-language cause and next action."""
+    raw = str(detail or "").strip()
+    folded = raw.casefold()
+    phase_key = str(phase or "repair").casefold()
+    phase_label = _REPAIR_PHASE_LABELS.get(phase_key, "АВТОВОССТАНОВЛЕНИЕ")
+
+    problem = ""
+    advice = ""
+
+    if (
+        "недостаточно свободного места" in folded
+        or "not enough free space" in folded
+        or "no space left on device" in folded
+        or "winerror 112" in folded
+        or "errno 28" in folded
+    ):
+        problem = "На диске не хватает свободного места"
+        advice = (
+            "Освободи место на диске установки. Для архива около 4 ГБ требуется дополнительное "
+            "пространство для распаковки. В ошибке ниже указано, сколько места нужно и сколько доступно."
+        )
+    elif (
+        ("403" in folded or "forbidden" in folded)
+        and ("google drive" in folded or "drive" in folded or "http" in folded)
+    ):
+        problem = "Google Drive отказал в доступе к архиву (HTTP 403)"
+        advice = (
+            "Проверь, что исходный файл GTA Criminal Russia.zip существует и доступен всем, "
+            "у кого есть ссылка. Если доступ уже открыт, Google мог временно ограничить скачивание; "
+            "повтори попытку позже."
+        )
+    elif (
+        "404" in folded
+        and ("google drive" in folded or "drive" in folded or "http" in folded or "not found" in folded)
+    ):
+        problem = "Google Drive не нашёл архив (HTTP 404)"
+        advice = (
+            "Проверь, что архив не удалён, не перемещён и что ссылка на нужный файл всё ещё актуальна."
+        )
+    elif (
+        "429" in folded
+        or "quotaexceeded" in folded
+        or "too many requests" in folded
+        or "download quota" in folded
+        or "лимит скачивания" in folded
+    ):
+        problem = "Google Drive ограничил частоту или объём скачивания"
+        advice = (
+            "Это ограничение со стороны хранилища, а не повреждение игрового клиента. "
+            "Подожди и повтори попытку; если повторяется, проверь лимиты доступа к архиву."
+        )
+    elif (
+        "timed out" in folded
+        or "timeout" in folded
+        or "время ожидания" in folded
+        or "connection reset" in folded
+        or "connection aborted" in folded
+        or "remote end closed" in folded
+        or "failed to establish a new connection" in folded
+    ):
+        problem = "Соединение с Google Drive прервалось или не ответило вовремя"
+        advice = (
+            "Проверь интернет и сетевой фильтр/VPN. Частичный архив сохраняется для продолжения; "
+            "повтори загрузку, не удаляя его вручную."
+        )
+    elif (
+        "вернул html" in folded
+        or "html-страницу вместо zip" in folded
+        or "ответ сервера не похож на zip" in folded
+        or "not a zip archive" in folded
+        or "file is not a zip" in folded
+    ):
+        problem = "Вместо ZIP-архива пришла веб-страница"
+        advice = (
+            "Google Drive не выдал сам архив — обычно это страница доступа, подтверждения или ограничения. "
+            "Проверь публичный доступ к файлу и повтори попытку."
+        )
+    elif (
+        "badzipfile" in folded
+        or "не является целым zip-архивом" in folded
+        or "crc" in folded and ("zip" in folded or "архив" in folded)
+        or "zipfile.badzipfile" in folded
+    ):
+        problem = "Архив повреждён или скачан не полностью"
+        advice = (
+            "Повтори загрузку и проверку. Если ошибка повторяется на том же месте, исходный ZIP на Google Drive "
+            "может быть повреждён — потребуется проверить или перезалить архив."
+        )
+    elif (
+        "permissionerror" in folded
+        or "access is denied" in folded
+        or "доступ запрещён" in folded
+        or "winerror 5" in folded
+        or "permission denied" in folded
+    ):
+        problem = "Windows не разрешила записать файлы в выбранную папку"
+        advice = (
+            "Полностью закрой GTA/CR:MP и проверь права на папку установки. При необходимости выбери папку, "
+            "в которую текущий пользователь Windows может записывать файлы."
+        )
+    elif "sha-256" in folded or "sha256" in folded or "контрольная сумма" in folded:
+        problem = "Контрольная сумма файла не совпала"
+        advice = (
+            "Файл отличается от ожидаемого эталона. Повтори загрузку; если несоответствие повторится, "
+            "нужно проверить исходный архив или манифест, а не продолжать запускать повреждённый клиент."
+        )
+    elif (
+        "grand_theft_auto_san_andreas.dll" in folded
+        or "multiplayer_browser_cr.exe" in folded
+        or "игровой runtime" in folded
+        or "runtime не найден" in folded
+    ):
+        problem = "В распакованном клиенте отсутствует обязательный компонент CR:MP"
+        advice = (
+            "Архив не дал полный набор файлов или распаковка завершилась не полностью. "
+            "Повтори восстановление; если ошибка останется, проверь состав исходного ZIP."
+        )
+    elif (
+        "unsafe path" in folded
+        or "небезопасный путь" in folded
+        or "выходит за пределы" in folded
+        or "symbolic link" in folded
+    ):
+        problem = "Проверка безопасности остановила распаковку архива"
+        advice = (
+            "Лаунчер обнаружил путь файла, который выходит за границы папки игры или небезопасную ссылку. "
+            "Архив не был распакован полностью; проверь исходный ZIP."
+        )
+    else:
+        problem = f"Не удалось завершить этап «{phase_label.lower()}»"
+        advice = (
+            "Ниже показана исходная ошибка. Она сохранена без подмены общим сообщением; "
+            "по этой строке можно установить точную причину, а кнопка «ЖУРНАЛ» содержит полный traceback."
+        )
+
+    return {
+        "problem": problem,
+        "advice": advice,
+        "detail": raw[:2400] or "Лаунчер не получил текст исключения; открой «ЖУРНАЛ» для полной диагностики.",
+        "phase": phase_key,
+        "phase_label": phase_label,
+    }
 
 
 def parse_windows_crash_event_payload(
