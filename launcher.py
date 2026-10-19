@@ -1074,17 +1074,24 @@ def connect_via_browser_ui(executable: Path, host: str, port: int, nickname: str
     return process
 
 
-def safe_extract_zip(archive: Path, destination: Path, progress=None, cancel=None) -> int:
-    """Extract a ZIP while preventing path traversal, symlinks and unsafe destinations."""
+def safe_extract_zip(
+    archive: Path,
+    destination: Path,
+    progress=None,
+    cancel=None,
+    *,
+    integrity_manifest_path: Path | None = None,
+) -> int:
+    """Safely extract ZIP entries and optionally record SHA-256 baselines while streaming."""
     destination.mkdir(parents=True, exist_ok=True)
     root = destination.resolve()
     extracted_files = 0
+    integrity_entries: list[dict] = []
 
     with zipfile.ZipFile(archive, "r") as bundle:
         entries = bundle.infolist()
         total_bytes = sum(entry.file_size for entry in entries if not entry.is_dir())
         free = shutil.disk_usage(destination).free
-        # The archive is already in the destination. Leave a little room for filesystem overhead.
         required = total_bytes + 128 * 1024 * 1024
         if free < required:
             need_gb = required / (1024 ** 3)
@@ -1125,7 +1132,7 @@ def safe_extract_zip(archive: Path, destination: Path, progress=None, cancel=Non
                 continue
 
             target.parent.mkdir(parents=True, exist_ok=True)
-            # Stream in chunks: no file is loaded completely into memory.
+            digest = hashlib.sha256() if integrity_manifest_path is not None else None
             with bundle.open(entry, "r") as source, target.open("wb") as output:
                 while True:
                     if cancel is not None and cancel.is_set():
@@ -1136,10 +1143,36 @@ def safe_extract_zip(archive: Path, destination: Path, progress=None, cancel=Non
                     if not chunk:
                         break
                     output.write(chunk)
+                    if digest is not None:
+                        digest.update(chunk)
                     completed_bytes += len(chunk)
                     if progress:
                         progress(completed_bytes, total_bytes, entry.filename)
             extracted_files += 1
+            if digest is not None:
+                info = target.stat()
+                integrity_entries.append({
+                    "path": relative.as_posix(),
+                    "size": info.st_size,
+                    "sha256": digest.hexdigest(),
+                    "crc32": f"{int(entry.CRC) & 0xFFFFFFFF:08x}",
+                    "mtime_ns": info.st_mtime_ns,
+                })
+
+    if integrity_manifest_path is not None:
+        integrity_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema": 1,
+            "source": "google-drive-archive",
+            "created_at": int(time.time()),
+            "files": integrity_entries,
+        }
+        temporary = integrity_manifest_path.with_name(integrity_manifest_path.name + ".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, integrity_manifest_path)
 
     return extracted_files
 
