@@ -20,7 +20,7 @@ import zlib
 from pathlib import Path, PurePosixPath
 from tkinter import filedialog, messagebox
 from html import unescape
-from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 
@@ -656,24 +656,24 @@ def _google_drive_confirmation_url(
     cookies = cookies or {}
     # Prefer Google's confirmation form because it may carry additional UUID parameters.
     form = re.search(
-        r"<form\\b([^>]*)>(.*?)</form\\s*>", html, flags=re.I | re.S
+        r"<form\b([^>]*)>(.*?)</form\s*>", html, flags=re.I | re.S
     )
     if form:
         attrs = {
             key.lower(): unescape(value1 if value1 is not None else value2 if value2 is not None else value3 or "")
             for key, value1, value2, value3 in re.findall(
-                r"([\\w:-]+)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+                r"([\w:-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))",
                 form.group(1),
                 flags=re.I,
             )
         }
         action = attrs.get("action")
         fields = {}
-        for tag in re.findall(r"<input\\b([^>]*)>", form.group(2), flags=re.I | re.S):
+        for tag in re.findall(r"<input\b([^>]*)>", form.group(2), flags=re.I | re.S):
             values = {
                 key.lower(): unescape(v1 if v1 is not None else v2 if v2 is not None else v3 or "")
                 for key, v1, v2, v3 in re.findall(
-                    r"([\\w:-]+)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))",
+                    r"([\w:-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))",
                     tag,
                     flags=re.I,
                 )
@@ -681,7 +681,7 @@ def _google_drive_confirmation_url(
             if values.get("name") and "value" in values:
                 fields[values["name"]] = values["value"]
         if fields.get("confirm"):
-            target = urllib.parse.urljoin(response_url, action or response_url)
+            target = urljoin(response_url, action or response_url)
             parts = urlparse(target)
             query = parse_qs(parts.query, keep_blank_values=True)
             query.update({key: [value] for key, value in fields.items()})
@@ -695,8 +695,8 @@ def _google_drive_confirmation_url(
             break
     if not token:
         for pattern in (
-            r"name\\s*=\\s*[\"']confirm[\"'][^>]*value\\s*=\\s*[\"']([^\"']+)",
-            r"value\\s*=\\s*[\"']([^\"']+)[\"'][^>]*name\\s*=\\s*[\"']confirm[\"']",
+            r"name\s*=\s*[\"']confirm[\"'][^>]*value\s*=\s*[\"']([^\"']+)",
+            r"value\s*=\s*[\"']([^\"']+)[\"'][^>]*name\s*=\s*[\"']confirm[\"']",
             r"[?&]confirm=([A-Za-z0-9_-]+)",
         ):
             match = re.search(pattern, html, flags=re.I)
