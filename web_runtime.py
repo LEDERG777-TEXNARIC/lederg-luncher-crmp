@@ -486,6 +486,7 @@ class LauncherApi:
         self._progress_label = "ПРОВЕРКА"
         self._current_file = ""
         self._error = ""
+        self._repair_failure: dict = self._load_saved_repair_failure()
         self._process: subprocess.Popen | None = None
         self._xpanel_stop: threading.Event | None = None
         self._game_root: Path | None = None
@@ -509,6 +510,29 @@ class LauncherApi:
         self._refresh_install_root()
         threading.Thread(target=self._server_monitor, daemon=True, name="LEDERG-server-monitor").start()
         threading.Thread(target=self._startup_check, daemon=True, name="LEDERG-client-check").start()
+
+    @staticmethod
+    def _load_saved_repair_failure() -> dict:
+        """Restore the last failed auto-repair diagnosis so a restart does not hide it."""
+        try:
+            payload = json.loads(AUTO_REPAIR_STATE_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return {}
+        if not isinstance(payload, dict) or str(payload.get("result") or "").casefold() != "failed":
+            return {}
+        detail = str(payload.get("detail") or payload.get("reason") or "")
+        phase = str(payload.get("phase") or "repair")
+        diagnosis = diagnose_auto_repair_failure(detail, phase)
+        try:
+            attempted_at = float(payload.get("attempted_at") or 0)
+        except (ValueError, TypeError):
+            attempted_at = 0.0
+        remaining = max(
+            0.0,
+            AUTO_REPAIR_FAILURE_RETRY_SECONDS - max(0.0, time.time() - attempted_at),
+        )
+        diagnosis["retry_minutes"] = max(0, int((remaining + 59) // 60))
+        return diagnosis
 
     @staticmethod
     def _read_text(path: Path, default: str) -> str:
@@ -623,26 +647,38 @@ class LauncherApi:
                 else AUTO_REPAIR_COOLDOWN_SECONDS
             )
             if same_install and now - previous_attempt < cooldown:
-                retry_minutes = max(1, int((cooldown - max(0.0, now - previous_attempt) + 59) // 60))
+                remaining = max(0.0, cooldown - max(0.0, now - previous_attempt))
+                retry_minutes = max(1, int((remaining + 59) // 60))
                 if previous_result == "failed":
+                    last_detail = str(previous.get("detail") or previous.get("reason") or reason)
+                    diagnosis = diagnose_auto_repair_failure(
+                        last_detail, str(previous.get("phase") or "repair")
+                    )
+                    diagnosis["retry_minutes"] = retry_minutes
                     message = (
-                        "Автовосстановление завершилось ошибкой. "
-                        f"Следующая автоматическая попытка будет не раньше чем через {retry_minutes} мин; "
-                        "для повтора сразу нажми «Переустановить»."
+                        f"Автовосстановление не удалось: {diagnosis['problem']}. "
+                        f"Автоповтор через {retry_minutes} мин. "
+                        "Подробности и исходная ошибка показаны ниже."
                     )
                 else:
+                    diagnosis = {}
                     message = (
                         "Автовосстановление уже запускалось за последние 24 часа. "
                         "Проверь журнал или нажми «Переустановить» для ручного повтора."
                     )
                 write_launcher_log(
                     f"Automatic repair suppressed: root={resolved}; result={previous_result}; "
-                    f"cooldown_seconds={cooldown}; reason={reason}"
+                    f"cooldown_seconds={cooldown}; reason={reason}; "
+                    f"last_failure={previous.get('detail')!r}"
                 )
                 with self._lock:
                     self._phase = "error"
                     self._error = message
                     self._status = self._error
+                    if diagnosis:
+                        self._repair_failure = diagnosis
+                    elif previous_result != "failed":
+                        self._repair_failure = {}
                 return False
             AUTO_REPAIR_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
             temporary = AUTO_REPAIR_STATE_FILE.with_name(AUTO_REPAIR_STATE_FILE.name + ".tmp")
@@ -659,7 +695,7 @@ class LauncherApi:
         return True
 
     def _finish_auto_repair_attempt(
-        self, root: Path, *, succeeded: bool, detail: str
+        self, root: Path, *, succeeded: bool, detail: str, phase: str = ""
     ) -> None:
         """Record whether a guarded automatic repair actually produced a verified client."""
         resolved = str(Path(root).resolve())
@@ -672,16 +708,26 @@ class LauncherApi:
                 return
             payload["result"] = "succeeded" if succeeded else "failed"
             payload["finished_at"] = time.time()
-            payload["detail"] = str(detail or "")[:1000]
+            payload["detail"] = str(detail or "")[:2400]
+            payload["phase"] = str(phase or "repair")
+            if succeeded:
+                payload.pop("diagnostic", None)
+                diagnosis = {}
+            else:
+                diagnosis = diagnose_auto_repair_failure(str(detail or ""), str(phase or "repair"))
+                payload["diagnostic"] = diagnosis
             temporary = AUTO_REPAIR_STATE_FILE.with_name(AUTO_REPAIR_STATE_FILE.name + ".tmp")
             temporary.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
             os.replace(temporary, AUTO_REPAIR_STATE_FILE)
+            with self._lock:
+                self._repair_failure = diagnosis
             write_launcher_log(
                 f"Automatic repair result recorded: root={resolved}; "
-                f"result={payload['result']}; detail={payload['detail']!r}"
+                f"result={payload['result']}; phase={payload['phase']}; "
+                f"diagnostic={diagnosis!r}; detail={payload['detail']!r}"
             )
         except (OSError, ValueError, TypeError) as exc:
             write_launcher_log(f"Could not record automatic repair result for {resolved}: {exc!r}")
@@ -942,6 +988,7 @@ class LauncherApi:
             server_checked_at = self._server_checked_at
             last_exit_code = self._last_exit_code
             health = dict(self._client_health)
+            repair_failure = dict(self._repair_failure)
         runtime = find_direct_game_client(root) if root else None
         browser = find_client(root) if root else None
         client_candidate = root or self._find_client_candidate(selected)
@@ -977,6 +1024,7 @@ class LauncherApi:
             "client_health_issues": list(health.get("issues") or []),
             "client_health_warnings": list(health.get("warnings") or []),
             "client_integrity_mode": str(health.get("integrity_mode") or "pending"),
+            "repair_failure": repair_failure,
         }
 
     def set_nickname(self, nickname: str) -> dict:
@@ -1335,6 +1383,7 @@ class LauncherApi:
             self._progress = 0.0
             self._progress_label = "ПЕРЕУСТАНОВКА" if reinstall else "ПОДГОТОВКА"
             self._error = ""
+            self._repair_failure = {}
         write_launcher_log(
             f"Client {'reinstall/repair' if reinstall else 'install'} requested: selected={selected}"
         )
@@ -1371,6 +1420,8 @@ class LauncherApi:
     ) -> None:
         archive: Path | None = None
         repair_succeeded = False
+        failure_detail = ""
+        failure_phase = ""
         integrity_inventory = DATA_HOME / "pending-client-integrity.json"
         try:
             with self._lock:
@@ -1532,11 +1583,19 @@ class LauncherApi:
             write_launcher_log(f"Client update completed: root={root}; files={count}")
             repair_succeeded = True
         except Exception as exc:
-            write_launcher_log(f"ERROR updating client: {traceback.format_exc()}")
+            failure_detail = str(exc) or repr(exc)
+            with self._lock:
+                failure_phase = self._phase or "repair"
+            diagnosis = diagnose_auto_repair_failure(failure_detail, failure_phase)
+            write_launcher_log(
+                f"ERROR updating client: phase={failure_phase}; "
+                f"diagnosis={diagnosis!r}; traceback={traceback.format_exc()}"
+            )
             with self._lock:
                 self._phase = "error"
-                self._error = str(exc)
-                self._status = f"Ошибка обновления: {exc}"
+                self._repair_failure = diagnosis
+                self._error = f"Восстановление не удалось: {diagnosis['problem']}"
+                self._status = self._error
         finally:
             try:
                 integrity_inventory.unlink(missing_ok=True)
@@ -1545,11 +1604,13 @@ class LauncherApi:
                 pass
             if auto_repair_root is not None:
                 with self._lock:
-                    detail = self._error or self._status
+                    detail = failure_detail or self._error or self._status
+                    phase = failure_phase or self._phase or "repair"
                 self._finish_auto_repair_attempt(
                     auto_repair_root,
                     succeeded=repair_succeeded,
                     detail=detail,
+                    phase=phase,
                 )
             with self._lock:
                 self._busy = False
