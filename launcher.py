@@ -770,9 +770,11 @@ def download_archive(destination: Path, progress=None, cancel=None, url: str = Z
     Download a ZIP from the LEDERG HTTP endpoint. Supports Range resume,
     validates server responses, and keeps partial files after interruptions.
     """
+    _validate_client_archive_source(url)
     destination.mkdir(parents=True, exist_ok=True)
-    partial = destination / ".lederg-crmp-download.zip.part"
-    complete = destination / ".lederg-crmp-download.zip"
+    # Keep this file separate from archives downloaded by older builds from Cloudpub.
+    partial = destination / ".lederg-crmp-google-drive.zip.part"
+    complete = destination / ".lederg-crmp-google-drive.zip"
 
     def archive_matches(candidate: Path) -> bool:
         if not candidate.is_file() or not zipfile.is_zipfile(candidate):
