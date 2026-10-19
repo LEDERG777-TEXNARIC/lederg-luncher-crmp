@@ -19,7 +19,8 @@ import zipfile
 import zlib
 from pathlib import Path, PurePosixPath
 from tkinter import filedialog, messagebox
-from urllib.parse import parse_qs, quote, urlparse
+from html import unescape
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 
@@ -37,8 +38,15 @@ APP_NAME = "LEDERG CR:MP"
 # addresses and client releases can be changed without rebuilding the EXE.
 SERVER_IP_URL = "https://raw.githubusercontent.com/LEDERG777-TEXNARIC/lederg-ip-crmp/main/ip"
 CLIENT_MANIFEST_URL = "https://raw.githubusercontent.com/LEDERG777-TEXNARIC/lederg-client/main/client.json"
-ZIP_URL = "https://oddly-hopeful-rudd.cloudpub.ru/downloads/GTA-Criminal-Russia.zip"
-CLIENT_FILES_MANIFEST_URL = "https://oddly-hopeful-rudd.cloudpub.ru/client-manifest.json"
+DRIVE_FILE_ID = "1981J9qVnGbEjLK7lXg7L2AO1br0ATRct"
+DRIVE_DOWNLOAD_URL = (
+    "https://drive.usercontent.google.com/download"
+    f"?id={DRIVE_FILE_ID}&export=download"
+)
+# The full game archive is deliberately pinned to this single Google Drive file.
+# Per-file/Cloudpub manifests are disabled so no game payload comes from another host.
+ZIP_URL = DRIVE_DOWNLOAD_URL
+CLIENT_FILES_MANIFEST_URL = ""
 ZIP_SIZE = 0
 SERVER_HOST = "188.127.241.8"
 SERVER_PORT = 1130
@@ -181,10 +189,10 @@ def fetch_release_manifest(fetcher=None) -> dict:
     mode = DEFAULT_LAUNCH_MODE
     payload.update({
         "version": version,
-        "archive_url": archive_url,
-        "files_manifest_url": files_manifest_url,
-        "archive_size": size,
-        "sha256": digest,
+        "archive_url": DRIVE_DOWNLOAD_URL,
+        "files_manifest_url": "",
+        "archive_size": 0,
+        "sha256": "",
         "client_executable": executable.replace("\\", "/"),
         "launch_mode": mode,
     })
@@ -620,15 +628,153 @@ def _content_range_total(value: str | None) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _is_google_drive_url(url: str) -> bool:
+    parsed = urlparse(str(url or ""))
+    query = parse_qs(parsed.query)
+    return bool(
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() in {
+            "drive.usercontent.google.com",
+            "drive.google.com",
+        }
+        and parsed.path in {"/download", "/uc"}
+        and query.get("id", [""])[0] == DRIVE_FILE_ID
+    )
+
+
+def _validate_client_archive_source(url: str) -> str:
+    """Reject all client archive sources except the one user-supplied Drive file."""
+    if not _is_google_drive_url(url):
+        raise ValueError("Игровой клиент разрешено скачивать только из указанного Google Drive.")
+    return url
+
+
+def _google_drive_confirmation_url(
+    response_url: str, html: str, cookies: dict[str, str] | None = None
+) -> str:
+    """Resolve Google's large-file virus-scan confirmation page without downloading its HTML."""
+    cookies = cookies or {}
+    # Prefer Google's confirmation form because it may carry additional UUID parameters.
+    form = re.search(
+        r"<form\b([^>]*)>(.*?)</form\s*>", html, flags=re.I | re.S
+    )
+    if form:
+        attrs = {
+            key.lower(): unescape(value1 if value1 is not None else value2 if value2 is not None else value3 or "")
+            for key, value1, value2, value3 in re.findall(
+                r"([\w:-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))",
+                form.group(1),
+                flags=re.I,
+            )
+        }
+        action = attrs.get("action")
+        fields = {}
+        for tag in re.findall(r"<input\b([^>]*)>", form.group(2), flags=re.I | re.S):
+            values = {
+                key.lower(): unescape(v1 if v1 is not None else v2 if v2 is not None else v3 or "")
+                for key, v1, v2, v3 in re.findall(
+                    r"([\w:-]+)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))",
+                    tag,
+                    flags=re.I,
+                )
+            }
+            if values.get("name") and "value" in values:
+                fields[values["name"]] = values["value"]
+        if fields.get("confirm"):
+            target = urljoin(response_url, action or response_url)
+            parts = urlparse(target)
+            query = parse_qs(parts.query, keep_blank_values=True)
+            query.update({key: [value] for key, value in fields.items()})
+            confirmed = urlunparse(parts._replace(query=urlencode(query, doseq=True)))
+            return _validate_client_archive_source(confirmed)
+
+    token = ""
+    for name, value in cookies.items():
+        if name.lower().startswith("download_warning") and value:
+            token = value
+            break
+    if not token:
+        for pattern in (
+            r"name\s*=\s*[\"']confirm[\"'][^>]*value\s*=\s*[\"']([^\"']+)",
+            r"value\s*=\s*[\"']([^\"']+)[\"'][^>]*name\s*=\s*[\"']confirm[\"']",
+            r"[?&]confirm=([A-Za-z0-9_-]+)",
+        ):
+            match = re.search(pattern, html, flags=re.I)
+            if match:
+                token = unescape(match.group(1))
+                break
+    parts = urlparse(response_url)
+    query = parse_qs(parts.query, keep_blank_values=True)
+    if token:
+        query["confirm"] = [token]
+    elif query.get("confirm"):
+        return _validate_client_archive_source(response_url)
+    else:
+        raise RuntimeError(
+            "Google Drive запросил подтверждение загрузки, но токен не найден. "
+            "Проверь доступ «Все, у кого есть ссылка» к архиву."
+        )
+    confirmed = urlunparse(parts._replace(query=urlencode(query, doseq=True)))
+    return _validate_client_archive_source(confirmed)
+
+
+def _open_google_drive_response(
+    url: str, headers: dict[str, str] | None = None, timeout=(20, 60)
+):
+    """Open the pinned Drive file, automatically handling the large-file confirmation page."""
+    _validate_client_archive_source(url)
+    request_headers = headers or {}
+    response = HTTP.get(
+        url,
+        headers=request_headers,
+        stream=True,
+        allow_redirects=True,
+        timeout=timeout,
+    )
+    content_type = (response.headers.get("Content-Type") or "").lower()
+    if "text/html" not in content_type:
+        return response, url
+    body = bytearray()
+    for chunk in response.iter_content(chunk_size=64 * 1024):
+        if chunk:
+            body.extend(chunk)
+            if len(body) > 2 * 1024 * 1024:
+                response.close()
+                raise RuntimeError("Google Drive вернул слишком большую HTML-страницу вместо подтверждения.")
+    response_url = response.url
+    cookies = response.cookies.get_dict()
+    response.close()
+    confirmed_url = _google_drive_confirmation_url(
+        response_url, body.decode("utf-8", errors="replace"), cookies
+    )
+    confirmed = HTTP.get(
+        confirmed_url,
+        headers=request_headers,
+        stream=True,
+        allow_redirects=True,
+        timeout=timeout,
+    )
+    confirmed_type = (confirmed.headers.get("Content-Type") or "").lower()
+    if "text/html" in confirmed_type:
+        confirmed.close()
+        raise RuntimeError(
+            "Google Drive снова вернул HTML вместо архива. "
+            "Проверь, что файл доступен по ссылке и не требует авторизации."
+        )
+    return confirmed, confirmed_url
+
+
 def download_archive(destination: Path, progress=None, cancel=None, url: str = ZIP_URL,
                      expected_sha256: str = "", expected_size: int = 0) -> Path:
     """
     Download a ZIP from the LEDERG HTTP endpoint. Supports Range resume,
     validates server responses, and keeps partial files after interruptions.
     """
+    _validate_client_archive_source(url)
     destination.mkdir(parents=True, exist_ok=True)
-    partial = destination / ".lederg-crmp-download.zip.part"
-    complete = destination / ".lederg-crmp-download.zip"
+    # Keep this file separate from archives downloaded by older builds from Cloudpub.
+    partial = destination / ".lederg-crmp-google-drive.zip.part"
+    complete = destination / ".lederg-crmp-google-drive.zip"
 
     def archive_matches(candidate: Path) -> bool:
         if not candidate.is_file() or not zipfile.is_zipfile(candidate):
@@ -662,17 +808,24 @@ def download_archive(destination: Path, progress=None, cancel=None, url: str = Z
             progress("download", size, size, "Готовый архив восстановлен")
         return complete
 
+    _validate_client_archive_source(url)
     try:
-        head = HTTP.head(
-            url, allow_redirects=True, timeout=(20, 30)
+        probe, resolved_url = _open_google_drive_response(
+            url, headers={}, timeout=(20, 45)
         )
-        head.raise_for_status()
-        remote_size = int(head.headers.get("Content-Length") or 0)
-        etag = head.headers.get("ETag")
+        try:
+            probe.raise_for_status()
+            remote_size = int(probe.headers.get("Content-Length") or 0)
+            if probe.status_code == 206:
+                remote_size = _content_range_total(probe.headers.get("Content-Range")) or remote_size
+            etag = probe.headers.get("ETag")
+        finally:
+            probe.close()
+        url = resolved_url
     except Exception as exc:
         raise RuntimeError(
-            "Не удалось подключиться к серверу загрузки LEDERG. "
-            "Проверь интернет-соединение и доступность сервера.\n\n"
+            "Не удалось подключиться к указанному архиву Google Drive. "
+            "Проверь интернет-соединение и доступ «Все, у кого есть ссылка».\n\n"
             f"Детали: {exc}"
         ) from exc
 
@@ -709,13 +862,11 @@ def download_archive(destination: Path, progress=None, cancel=None, url: str = Z
                 headers["If-Range"] = etag
 
         try:
-            with HTTP.get(
-                url,
-                headers=headers,
-                stream=True,
-                allow_redirects=True,
-                timeout=(20, 90),
-            ) as response:
+            response, resolved_url = _open_google_drive_response(
+                url, headers=headers, timeout=(20, 90)
+            )
+            url = resolved_url
+            with response:
                 if offset and response.status_code == 416:
                     if (
                         (not remote_size or partial.stat().st_size == remote_size)

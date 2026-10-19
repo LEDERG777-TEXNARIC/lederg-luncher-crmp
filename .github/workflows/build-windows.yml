@@ -21,6 +21,10 @@ jobs:
       - run: python tools/update_runtime_manifest.py
       - run: git diff --exit-code -- runtime-manifest.json
       - run: python -m unittest discover -v
+      - name: Generate LEDERG application icon
+        run: |
+          python -m pip install Pillow
+          python tools/generate_icon.py
       - name: Build x86 direct-connect helper
         shell: pwsh
         run: |
