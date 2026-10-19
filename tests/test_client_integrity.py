@@ -176,6 +176,11 @@ class ClientSelfCheckTests(unittest.TestCase):
                 "Faulting application path: C:\\Other\\gta_sa.exe; "
                 "Faulting module name: d3d9.dll; Exception code: 0xc0000005"
             )
+            sibling_install = (
+                "Faulting application path: "
+                + str(root) + "-Old\\\\gta_sa.exe; "
+                "Faulting module name: d3d9.dll; Exception code: 0xc0000005"
+            )
             other_error = (
                 "Faulting application path: "
                 + str(root / "gta_sa.exe")
@@ -183,7 +188,7 @@ class ClientSelfCheckTests(unittest.TestCase):
             )
 
             found = select_client_crash_events(
-                [matched, other_install, other_error], root
+                [matched, other_install, sibling_install, other_error], root
             )
 
         self.assertEqual(found, [matched])
