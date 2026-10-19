@@ -17,15 +17,15 @@
     },
     {
       "path": "web_runtime.py",
-      "sha256": "22ce7cce27219b14b6ecc7b4d825fe5b3233eb02becaa7943f33badf50628fc7",
-      "size": 67700
+      "sha256": "3c1e0debf90a33ebf6ee172722cae1f2d42f8363ca5dbfb2366cb2c5a66df1bf",
+      "size": 79860
     },
     {
       "path": "web/index.html",
-      "sha256": "3ce40354bde8e7dda19258606af4d1e5bb074dad9eb703b7c8fbc3e4e1be8a5e",
-      "size": 31024
+      "sha256": "487b830abe59484e088996856057ee28639a44b29fd52e6ed4b528fb6de19fbc",
+      "size": 34232
     }
   ],
   "schema": 1,
-  "version": "2.5.1"
+  "version": "2.5.2"
 }
