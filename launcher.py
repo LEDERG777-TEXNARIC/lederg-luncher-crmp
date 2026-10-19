@@ -449,7 +449,7 @@ def select_client_crash_events(
         if "0xc0000005" not in folded:
             continue
         # Require a path boundary so C:\Games\CR does not match C:\Games\CR-Old.
-        if root_folded + "\\\\" not in folded:
+        if root_folded + "\" not in folded:
             continue
         selected.append(raw)
     return selected[:10]
