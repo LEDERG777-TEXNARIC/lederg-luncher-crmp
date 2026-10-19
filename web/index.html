@@ -49,6 +49,20 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
 .server-copy{min-width:0}
 .server-copy label{display:block;margin-bottom:5px;color:#70707a;font-size:8px;letter-spacing:2px;font-weight:900}
 .server-copy strong{display:block;color:#f4f4f8;font:12px "Cascadia Code",Consolas,monospace;white-space:nowrap}
+.server-led{transition:background .25s,box-shadow .25s}
+.server-led.online{background:var(--green);box-shadow:0 0 16px #6ff3b2bb}
+.server-led.offline{background:var(--red);box-shadow:0 0 16px #ff244599}
+.server-meta{display:block;margin-top:5px;color:#777781;font-size:8px;font-weight:850;letter-spacing:1px}
+.server-meta.online{color:var(--green)}
+.server-meta.offline{color:#ff627b}
+.secondary-actions{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:13px;padding:11px 3px 0;border-top:1px solid #25252c}
+.secondary-actions[hidden]{display:none}
+.secondary-copy{min-width:0;display:flex;flex-direction:column;gap:5px}
+.secondary-copy strong{font-size:9px;letter-spacing:1.2px;color:#d5d5dc}
+.secondary-copy span{font-size:9px;line-height:1.5;color:#71717c}
+.reinstall-button{flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:12px 15px;border:1px solid #45303a;border-radius:12px;background:linear-gradient(120deg,#1a1117,#101014);color:#ff8599;font-size:9px;font-weight:950;letter-spacing:1px;transition:all .2s}
+.reinstall-button:hover{border-color:#ff2445;background:#251218;color:#fff;box-shadow:0 0 20px #ff244512}
+.reinstall-button:disabled{opacity:.5;cursor:wait}
 .copy-server{padding:8px 9px;border-radius:8px;border:1px solid #383841;background:#19191f;color:#aaaab4;font-size:8px;font-weight:950;letter-spacing:.9px;transition:all .2s}
 .copy-server:hover{border-color:#ff2445;color:#fff}
 .hero-art{position:relative;height:350px;min-width:0;display:grid;place-items:center;isolation:isolate}
@@ -149,8 +163,8 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
         <div class="game-type"><strong>CR:MP</strong><span>NAMALSK RP</span></div>
         <p class="intro">Вход в <b>Criminal Russia Multiplayer</b> без лишних окон. Установи клиент один раз — дальше запускай сервер одной кнопкой.</p>
         <div class="server-inline">
-          <span class="server-led"></span>
-          <div class="server-copy"><label>АДРЕС СЕРВЕРА · LIVE CONFIG</label><strong id="endpoint">ЧИТАЮ КОНФИГУРАЦИЮ…</strong></div>
+          <span class="server-led" id="serverLed"></span>
+          <div class="server-copy"><label>АДРЕС СЕРВЕРА · SA:MP QUERY</label><strong id="endpoint">ЧИТАЮ КОНФИГУРАЦИЮ…</strong><span class="server-meta" id="serverMeta">ПРОВЕРКА ДОСТУПНОСТИ…</span></div>
           <button class="copy-server" id="copyEndpoint">КОПИРОВАТЬ</button>
         </div>
       </div>
@@ -196,6 +210,11 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
         <span class="btn-progress" aria-hidden="true"><span id="buttonProgress"></span></span>
       </button>
 
+      <div class="secondary-actions" id="secondaryActions" hidden>
+        <div class="secondary-copy"><strong>КЛИЕНТ УСТАНОВЛЕН, НО РАБОТАЕТ НЕСТАБИЛЬНО?</strong><span>Перекачать официальный архив с Google Drive и восстановить игровые файлы.</span></div>
+        <button class="reinstall-button" id="reinstallButton"><span aria-hidden="true">↻</span> ПЕРЕУСТАНОВИТЬ</button>
+      </div>
+
       <div class="status-row">
         <div class="status-left"><span class="status-light" id="statusLight"></span><span class="status-message" id="statusText">Готов к установке.</span></div>
         <div class="progress-label"><span id="progressLabel">КЛИЕНТ НЕ УСТАНОВЛЕН</span> · <span id="progressPercent">0%</span></div>
@@ -214,6 +233,7 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
 const $ = id => document.getElementById(id);
 let latestState = {};
 let busyUi = false;
+let actionPending = false;
 let toastTimer = 0;
 let refreshTimer = null;
 
@@ -224,7 +244,8 @@ function toast(message) {
   toastTimer = setTimeout(() => $("toast").classList.remove("show"), 3600);
 }
 function setBusy(value) {
-  busyUi = Boolean(value);
+  actionPending = Boolean(value);
+  busyUi = actionPending || Boolean(latestState.busy);
   const button = $("playButton");
   if (busyUi) {
     button.disabled = true;
@@ -232,14 +253,14 @@ function setBusy(value) {
     $("playLabel").textContent = "ПОДГОТОВКА";
     $("buttonHint").textContent = "НЕ ЗАКРЫВАЙ ЛАУНЧЕР";
     $("buttonArrow").textContent = "…";
+    $("reinstallButton").disabled = true;
     return;
   }
-  // Re-render from the latest native state so the CTA restores to INSTALL or PLAY.
-  if (latestState && typeof latestState === "object") {
-    applyState(latestState);
-  } else {
+  if (latestState && typeof latestState === "object") applyState(latestState);
+  else {
     button.disabled = false;
     button.classList.remove("is-busy");
+    $("reinstallButton").disabled = false;
   }
 }
 function applyState(state) {
@@ -251,22 +272,41 @@ function applyState(state) {
   $("endpoint").textContent = state.endpoint || "АДРЕС НЕ НАЙДЕН";
   $("installPath").textContent = state.install_path || "По умолчанию: Games";
   $("clientBadge").textContent = ready ? "КЛИЕНТ ГОТОВ" : (working ? "ИДЁТ УСТАНОВКА" : "НУЖНА УСТАНОВКА");
-  $("topStatus").textContent = working ? "ОБРАБОТКА" : (ready ? "ГОТОВ К ИГРЕ" : "ОЖИДАЕТ УСТАНОВКИ");
-  $("topPulse").classList.toggle("good", ready && !working);
-  $("topPulse").classList.toggle("bad", state.phase === "error");
+  const serverOnline = state.server_online === true;
+  const serverOffline = state.server_online === false;
+  const serverPing = Number.isFinite(Number(state.server_ping_ms)) && state.server_ping_ms !== null
+    ? Number(state.server_ping_ms) : null;
+  $("topStatus").textContent = serverOnline
+    ? ("ONLINE" + (serverPing !== null ? " · " + serverPing + " MS" : ""))
+    : (serverOffline ? "SERVER OFFLINE" : "ПРОВЕРКА СЕРВЕРА");
+  $("topPulse").classList.toggle("good", serverOnline);
+  $("topPulse").classList.toggle("bad", serverOffline);
+  $("serverLed").classList.toggle("online", serverOnline);
+  $("serverLed").classList.toggle("offline", serverOffline);
+  $("serverMeta").classList.toggle("online", serverOnline);
+  $("serverMeta").classList.toggle("offline", serverOffline);
+  $("serverMeta").textContent = serverOnline
+    ? ("ОНЛАЙН" + (serverPing !== null ? " · PING " + serverPing + " MS" : " · QUERY OK"))
+    : (serverOffline
+      ? ("ОФФЛАЙН · " + (state.server_detail || "НЕТ ОТВЕТА") + (state.server_checked_at ? " · " + state.server_checked_at : ""))
+      : "ПРОВЕРЯЮ СЕРВЕР…");
   $("statusLight").classList.toggle("good", ready && !working);
   $("statusLight").classList.toggle("bad", state.phase === "error");
+  $("secondaryActions").hidden = !ready;
+  $("reinstallButton").disabled = working || actionPending;
   $("statusText").textContent = state.error || state.status || (ready ? "Клиент установлен. Можно играть." : "Готов к установке.");
   $("progressLabel").textContent = state.progress_label || (ready ? "ГОТОВ К ЗАПУСКУ" : "КЛИЕНТ НЕ УСТАНОВЛЕН");
   $("progressPercent").textContent = Math.round(progress) + "%";
   $("buttonProgress").style.width = progress + "%";
   if (state.nickname && !$("nickname").matches(":focus")) $("nickname").value = state.nickname;
 
+  busyUi = working || actionPending;
   const button = $("playButton");
-  button.classList.toggle("is-ready", ready && !working);
-  button.classList.toggle("is-busy", working || busyUi);
-  button.disabled = working || busyUi;
-  if (working || busyUi) {
+  button.classList.toggle("is-ready", ready && !working && !actionPending);
+  button.classList.toggle("is-busy", working || actionPending);
+  button.disabled = working || actionPending;
+  $("reinstallButton").disabled = working || actionPending;
+  if (working || actionPending) {
     const phase = state.phase || "";
     $("playLabel").textContent = phase === "extract" ? "РАСПАКОВКА" : (phase === "download" ? "ЗАГРУЗКА" : "ПОДГОТОВКА");
     $("buttonHint").textContent = progress > 0 ? ("ВЫПОЛНЕНО " + Math.round(progress) + "%") : "НЕ ЗАКРЫВАЙ ЛАУНЧЕР";
@@ -304,7 +344,7 @@ async function chooseFolder() {
     if (result.message) toast(result.message);
     if (result.state) applyState(result.state);
   }
-  setBusy(Boolean(latestState.busy));
+  setBusy(false);
 }
 $("chooseFolder").addEventListener("click", chooseFolder);
 $("changeFolder").addEventListener("click", chooseFolder);
@@ -318,7 +358,15 @@ $("playButton").addEventListener("click", async () => {
     : await apiCall("start_install");
   if (result && result.message) toast(result.message);
   await refreshState();
-  setBusy(Boolean(latestState.busy));
+  setBusy(false);
+});
+$("reinstallButton").addEventListener("click", async () => {
+  if (busyUi || latestState.busy) return;
+  setBusy(true);
+  const result = await apiCall("reinstall_client");
+  if (result && result.message) toast(result.message);
+  await refreshState();
+  setBusy(false);
 });
 $("nickname").addEventListener("change", () => apiCall("set_nickname", $("nickname").value));
 $("openFolder").addEventListener("click", async () => {
