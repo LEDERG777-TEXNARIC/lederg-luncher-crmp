@@ -76,11 +76,11 @@ class AutomaticRepairGuardTests(unittest.TestCase):
                 blocked = api._auto_repair_allowed(root, "same damaged files")
 
             self.assertFalse(blocked)
-            self.assertIn("недостаточно свободного места", api._error.lower())
-            self.assertIn("4.2", api._error)
-            self.assertIn("1.1", api._error)
-            self.assertIn("повтор", api._error.lower())
-            self.assertIn("диске", api._error.lower())
+            self.assertIn("не хватает свободного места", api._error.lower())
+            self.assertIn("через 14 мин", api._error.lower())
+            self.assertIn("4.2", api._repair_failure["detail"])
+            self.assertIn("1.1", api._repair_failure["detail"])
+            self.assertIn("диске", api._repair_failure["advice"].lower())
 
     def test_failed_repair_diagnostic_classifier_identifies_google_drive_http_403(self):
         from web_runtime import diagnose_auto_repair_failure
