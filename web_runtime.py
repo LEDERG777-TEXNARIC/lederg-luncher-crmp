@@ -944,6 +944,51 @@ class LauncherApi:
                         "No matching Windows Application Error/WER event was found automatically; "
                         "check Windows Event Viewer > Windows Logs > Application."
                     )
+
+                with self._lock:
+                    root = self._game_root or self._install_path
+                faulting_module = extract_faulting_module(events)
+                if root and faulting_module:
+                    backup = quarantine_faulting_optional_module(root, faulting_module)
+                    if backup is not None:
+                        health = inspect_client_installation(root, full_scan=False)
+                        with self._lock:
+                            self._client_health = health
+                            if health["healthy"]:
+                                self._phase = "ready"
+                                self._error = ""
+                                self._status = (
+                                    "Windows указала локальный ENB d3d9.dll в аварийном событии. "
+                                    f"Временно отключил его с резервной копией: {backup.name}. "
+                                    "Запусти игру ещё раз."
+                                )
+                            else:
+                                self._phase = "error"
+                                self._error = (
+                                    "Отключил подтверждённую ENB-обёртку, но проверка нашла другие ошибки. "
+                                    + "; ".join(health["issues"][:4])
+                                )
+                                self._status = self._error
+                        write_launcher_log(
+                            f"Confirmed crash-module workaround applied: module={faulting_module}; "
+                            f"backup={backup}; health={health!r}"
+                        )
+                        return
+
+                reason = (
+                    f"CR:MP access violation {code_hex}; "
+                    f"Windows faulting module={faulting_module or 'not identified'}"
+                )
+                if root and self._request_auto_repair(root, reason):
+                    write_launcher_log(
+                        "Automatic full-client restore started after access violation. "
+                        "It is rate-limited to one automatic attempt per install in 24 hours."
+                    )
+                else:
+                    write_launcher_log(
+                        "Automatic client restore was not started; inspect launcher.log and "
+                        "Windows Application events, or use the manual reinstall action."
+                    )
         except Exception as exc:
             write_launcher_log(f"Process monitor error: {exc!r}")
 
@@ -1041,8 +1086,12 @@ class LauncherApi:
             )
             if manifest is None:
                 install_name = "GTA Criminal Russia"
-                selected_is_game_root = (selected / "gta_sa.exe").is_file()
-                destination = selected.parent if selected_is_game_root or selected.name.casefold() == install_name.casefold() else selected
+                selected_is_game_root = (
+                    (selected / "gta_sa.exe").is_file()
+                    or selected.name.casefold() == install_name.casefold()
+                    or any((selected / marker).exists() for marker in ("multiplayer_c", "models", "data"))
+                )
+                destination = selected.parent if selected_is_game_root else selected
                 archive_url = release.get("archive_url") or ZIP_URL
                 with self._lock:
                     self._status = "Скачиваю игровой клиент из Google Drive…"
