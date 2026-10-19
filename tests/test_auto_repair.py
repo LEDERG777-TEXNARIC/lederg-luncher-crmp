@@ -112,7 +112,7 @@ class AutomaticRepairGuardTests(unittest.TestCase):
 
             request.assert_called_once()
             self.assertEqual(request.call_args.args[0], root)
-            self.assertIn("integrity baseline", request.call_args.args[1])
+            self.assertIn("SHA-256 baseline", request.call_args.args[1])
 
     def test_repair_is_not_started_while_game_process_is_running(self):
         with tempfile.TemporaryDirectory() as temp:
