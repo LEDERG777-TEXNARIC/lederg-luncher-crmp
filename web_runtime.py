@@ -319,6 +319,7 @@ class LauncherApi:
         DATA_HOME.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._busy = False
+        self._checking_client = False
         self._phase = "idle"
         self._status = "Проверяю папку клиента…"
         self._progress = 0.0
@@ -556,6 +557,8 @@ class LauncherApi:
             time.sleep(12.0)
 
     def _startup_check(self) -> None:
+        with self._lock:
+            self._checking_client = True
         try:
             with self._lock:
                 root = self._game_root
@@ -618,12 +621,15 @@ class LauncherApi:
                 self._status = f"Ошибка автопроверки клиента: {exc}"
                 self._error = self._status
                 self._phase = "error"
+        finally:
+            with self._lock:
+                self._checking_client = False
 
     def get_state(self) -> dict:
         with self._lock:
             root = self._game_root
             selected = self._install_path
-            busy = self._busy
+            busy = self._busy or self._checking_client
             phase = self._phase
             status = self._status
             progress = self._progress
