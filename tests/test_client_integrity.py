@@ -19,19 +19,20 @@ from launcher import (
 )
 
 
-REQUIRED_DIRECTORIES = ("audio", "data", "models", "text", "multiplayer_c")
+REQUIRED_DIRECTORIES = (
+    "anim", "audio", "audio/CONFIG", "audio/SFX", "audio/streams",
+    "cleo", "data", "models", "movies", "text", "multiplayer_c"
+)
 REQUIRED_FILES = (
-    "gta_sa.exe",
+    "gta_sa.exe", "cleo.asi", "eax.dll", "GTAINTERFACE.dll", "LibMP.dll", "ogg.dll",
+    "anim/anim.img",
     "multiplayer_c/multiplayer_browser_cr.exe",
     "multiplayer_c/grand_theft_auto_san_andreas.dll",
     "multiplayer_c/san_andreas_multiplayer.dll",
-    "data/handling.cfg",
-    "models/gta3.img",
-    "models/gamemod.img",
-    "text/american.gxt",
+    "data/handling.cfg", "models/gta3.img", "models/gamemod.img", "text/american.gxt",
 )
 PE_FILES = (
-    "gta_sa.exe",
+    "gta_sa.exe", "cleo.asi", "eax.dll", "GTAINTERFACE.dll", "LibMP.dll", "ogg.dll",
     "multiplayer_c/multiplayer_browser_cr.exe",
     "multiplayer_c/grand_theft_auto_san_andreas.dll",
     "multiplayer_c/san_andreas_multiplayer.dll",
