@@ -415,6 +415,24 @@ def inspect_client_installation(
     }
 
 
+def extract_faulting_module_path(
+    events: str | list[str] | tuple[str, ...]
+) -> str | None:
+    """Parse the full path of the faulting module, if Windows included it."""
+    texts = [events] if isinstance(events, str) else list(events or [])
+    for event in texts:
+        text = str(event or "")
+        for pattern in (
+            r"Faulting module path:\s*([^\r\n]+)",
+            r"Путь сбойного модуля:\s*([^\r\n]+)",
+        ):
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip().strip('"')
+                return value or None
+    return None
+
+
 def extract_faulting_module(events: str | list[str] | tuple[str, ...]) -> str | None:
     """Parse the faulting-module name from a Windows Application Error event."""
     texts = [events] if isinstance(events, str) else list(events or [])
@@ -428,21 +446,28 @@ def extract_faulting_module(events: str | list[str] | tuple[str, ...]) -> str | 
             if match:
                 name = match.group(1).strip().strip('"')
                 return Path(name.replace("\\", "/")).name.casefold() or None
-        for pattern in (
-            r"Faulting module path:\s*([^\r\n]+)",
-            r"Путь сбойного модуля:\s*([^\r\n]+)",
-        ):
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                name = match.group(1).strip().strip('"')
-                return Path(name.replace("\\", "/")).name.casefold() or None
+    module_path = extract_faulting_module_path(texts)
+    if module_path:
+        return Path(module_path.replace("\\", "/")).name.casefold() or None
     return None
 
 
-def quarantine_faulting_optional_module(install_root: Path, module_name: str) -> Path | None:
-    """Reversibly disable only a confirmed local ENB D3D9 proxy involved in the crash."""
+def quarantine_faulting_optional_module(
+    install_root: Path, module_name: str, module_path: str | None = None
+) -> Path | None:
+    """Reversibly disable ENB only when the crash report points to this local proxy."""
     root = Path(install_root).resolve()
     if Path(str(module_name or "").replace("\\", "/")).name.casefold() != "d3d9.dll":
+        return None
+    if not module_path:
+        return None
+    reported_path = Path(str(module_path).strip().strip('"').replace("\\", "/"))
+    try:
+        reported_resolved = reported_path.resolve()
+        expected_resolved = (root / "d3d9.dll").resolve()
+    except OSError:
+        return None
+    if os.path.normcase(str(reported_resolved)) != os.path.normcase(str(expected_resolved)):
         return None
     if not (root / "enbseries.ini").is_file():
         return None
