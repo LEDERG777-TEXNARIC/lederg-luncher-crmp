@@ -44,6 +44,7 @@ from launcher import (
     extract_faulting_module,
     extract_faulting_module_path,
     quarantine_faulting_optional_module,
+    select_client_crash_events,
     sanitize_nickname,
     write_launcher_log,
     query_samp_server,
@@ -593,6 +594,74 @@ class LauncherApi:
                 f"issues={report.get('issues')!r}; warnings={report.get('warnings')!r}"
             )
             if report["healthy"]:
+                # Inspect recent Windows crash records before enabling Play. This lets
+                # the launcher address a crash that happened before this launcher run.
+                recent = collect_windows_crash_events(
+                    (
+                        "gta_sa.exe",
+                        "multiplayer_browser_cr.exe",
+                        "grand_theft_auto_san_andreas.dll",
+                        "LEDERG-DirectLaunch.exe",
+                    ),
+                    started_at=time.time() - 600.0,
+                    attempts=1,
+                )
+                recent = select_client_crash_events(recent, candidate)
+                if recent:
+                    for event in recent:
+                        write_launcher_log("Recent Windows crash event matched client: " + event)
+                    faulting_module = extract_faulting_module(recent)
+                    faulting_module_path = extract_faulting_module_path(recent)
+                    backup = (
+                        quarantine_faulting_optional_module(
+                            candidate, faulting_module, faulting_module_path
+                        )
+                        if faulting_module and faulting_module_path
+                        else None
+                    )
+                    if backup is not None:
+                        report = inspect_client_installation(candidate, full_scan=False)
+                        with self._lock:
+                            self._client_health = report
+                            self._game_root = candidate
+                            self._status = (
+                                "В журнале Windows найден сбой в локальном ENB d3d9.dll. "
+                                f"Отключил его обратимым способом; резервная копия: {backup.name}. "
+                                "Проверь запуск игры."
+                            )
+                            self._progress = 100.0
+                            self._progress_label = "ENB ОТКЛЮЧЁН · BACKUP OK"
+                            self._phase = "ready" if report["healthy"] else "error"
+                            self._error = "" if report["healthy"] else "; ".join(report["issues"][:5])
+                        write_launcher_log(
+                            f"Proactive ENB workaround applied from recent Windows event: "
+                            f"module={faulting_module}; path={faulting_module_path}; backup={backup}; "
+                            f"health={report!r}"
+                        )
+                        return
+
+                    reason = (
+                        "Recent Windows Application crash for this install: "
+                        f"module={faulting_module or 'unknown'}; "
+                        f"path={faulting_module_path or 'unknown'}; "
+                        + " | ".join(recent[:3])
+                    )
+                    if self._request_auto_repair(candidate, reason):
+                        return
+                    report = dict(report)
+                    report["healthy"] = False
+                    report["issues"] = list(report.get("issues") or []) + [
+                        "В журнале Windows найден свежий ACCESS_VIOLATION для этой установки; "
+                        "автоматическое восстановление ограничено защитой от повторных циклов."
+                    ]
+                    report["summary"] = "Найдена свежая авария Windows; нужна диагностика или ручное восстановление."
+                    with self._lock:
+                        self._client_health = report
+                        self._status = report["summary"]
+                        self._error = self._status
+                        self._phase = "error"
+                    return
+
                 with self._lock:
                     self._game_root = candidate if (candidate / "gta_sa.exe").is_file() else self._game_root
                     self._status = (
