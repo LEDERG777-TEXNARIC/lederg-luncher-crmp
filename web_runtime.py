@@ -27,6 +27,8 @@ from launcher import (
     SERVER_PORT,
     SERVER_IP_URL,
     ZIP_URL,
+    CLIENT_INTEGRITY_FILENAME,
+    ENB_DISABLED_BACKUP,
     build_direct_game_command,
     download_archive,
     download_client_folder,
@@ -37,6 +39,12 @@ from launcher import (
     load_server_address,
     parse_server_address,
     safe_extract_zip,
+    finalize_client_integrity_manifest,
+    inspect_client_installation,
+    extract_faulting_module,
+    extract_faulting_module_path,
+    quarantine_faulting_optional_module,
+    select_client_crash_events,
     sanitize_nickname,
     write_launcher_log,
     query_samp_server,
@@ -51,6 +59,8 @@ STATE_FILE = DATA_HOME / "install_location.txt"
 NICK_FILE = DATA_HOME / "nickname.txt"
 
 SERVER_FILE = DATA_HOME / "server_address.txt"
+AUTO_REPAIR_STATE_FILE = DATA_HOME / "auto-repair-state.json"
+AUTO_REPAIR_COOLDOWN_SECONDS = 24 * 60 * 60
 
 
 def parse_windows_crash_event_payload(
@@ -311,6 +321,7 @@ class LauncherApi:
         DATA_HOME.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._busy = False
+        self._checking_client = False
         self._phase = "idle"
         self._status = "Проверяю папку клиента…"
         self._progress = 0.0
@@ -327,6 +338,14 @@ class LauncherApi:
         self._server_detail = "Проверяю доступность сервера…"
         self._server_checked_at = ""
         self._last_exit_code: int | None = None
+        self._client_health: dict = {
+            "healthy": False,
+            "root": "",
+            "issues": [],
+            "warnings": [],
+            "summary": "Автопроверка клиента запускается…",
+            "integrity_mode": "pending",
+        }
         self._nickname = self._read_text(NICK_FILE, "LEDERG")
         self._install_path = self._read_install_path()
         self._refresh_install_root()
@@ -398,6 +417,97 @@ class LauncherApi:
             and find_direct_game_client(selected)
         ) else None
 
+    @staticmethod
+    def _find_client_candidate(selected: Path | None) -> Path | None:
+        """Find a partly installed game folder even if a required executable is missing."""
+        if selected is None:
+            return None
+        candidates = (
+            selected,
+            selected / "GTA Criminal Russia",
+            selected / "GTA Criminal Russia" / "GTA Criminal Russia",
+        )
+        for candidate in candidates:
+            try:
+                if not candidate.is_dir():
+                    continue
+                if candidate.name.casefold() == "gta criminal russia" or any(
+                    (candidate / marker).exists()
+                    for marker in ("gta_sa.exe", "multiplayer_c", "models", "data")
+                ):
+                    return candidate
+            except OSError:
+                continue
+        return None
+
+    def _auto_repair_allowed(self, root: Path, reason: str) -> bool:
+        """Limit crash-triggered full archive repairs to one attempt per install/day."""
+        resolved = str(Path(root).resolve())
+        now = time.time()
+        with self._lock:
+            if self._busy:
+                return False
+            if self._process is not None and self._process.poll() is None:
+                return False
+            try:
+                previous = json.loads(AUTO_REPAIR_STATE_FILE.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                previous = {}
+            try:
+                previous_attempt = float(previous.get("attempted_at") or 0)
+            except (TypeError, ValueError):
+                previous_attempt = 0.0
+            if (
+                str(previous.get("root") or "").casefold() == resolved.casefold()
+                and now - previous_attempt < AUTO_REPAIR_COOLDOWN_SECONDS
+            ):
+                write_launcher_log(
+                    f"Automatic repair suppressed by 24h safety limit: root={resolved}; reason={reason}"
+                )
+                with self._lock:
+                    self._phase = "error"
+                    self._error = (
+                        "Автовосстановление уже запускалось за последние 24 часа. "
+                        "Проверь журнал или нажми «Переустановить» для ручного повтора."
+                    )
+                    self._status = self._error
+                return False
+            AUTO_REPAIR_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            temporary = AUTO_REPAIR_STATE_FILE.with_name(AUTO_REPAIR_STATE_FILE.name + ".tmp")
+            temporary.write_text(
+                json.dumps({
+                    "root": resolved,
+                    "attempted_at": now,
+                    "reason": reason[:500],
+                }, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(temporary, AUTO_REPAIR_STATE_FILE)
+        return True
+
+    def _request_auto_repair(self, root: Path, reason: str) -> bool:
+        """Start one guarded full-client restore; never loop continuously on repeated crashes."""
+        if not self._auto_repair_allowed(root, reason):
+            write_launcher_log(
+                f"Automatic repair unavailable or throttled: root={root}; reason={reason}"
+            )
+            return False
+        write_launcher_log(
+            f"Automatic client repair requested: root={root}; reason={reason}"
+        )
+        with self._lock:
+            if self._game_root is None and (root / "gta_sa.exe").is_file():
+                self._game_root = root
+        result = self._begin_install(reinstall=True)
+        if not result.get("ok"):
+            write_launcher_log(f"Automatic client repair could not start: {result.get('message')}")
+            with self._lock:
+                self._phase = "error"
+                self._error = str(result.get("message") or "Не удалось начать автовосстановление.")
+                self._status = self._error
+            return False
+        return True
+
     def _refresh_server(self) -> None:
         try:
             host, port = load_server_address(SERVER_FILE)
@@ -449,29 +559,147 @@ class LauncherApi:
             time.sleep(12.0)
 
     def _startup_check(self) -> None:
+        with self._lock:
+            self._checking_client = True
         try:
             with self._lock:
                 root = self._game_root
-            if root and find_direct_game_client(root):
+                selected = self._install_path
+            candidate = root or self._find_client_candidate(selected)
+            if not candidate:
                 with self._lock:
-                    self._status = "Клиент готов к запуску."
-                    self._progress = 100.0
-                    self._progress_label = "КЛИЕНТ ПРОВЕРЕН"
-                    self._phase = "ready"
-            else:
-                with self._lock:
-                    self._status = "Выбери папку с игрой или скачай клиент."
+                    self._client_health = {
+                        "healthy": False,
+                        "root": "",
+                        "issues": [],
+                        "warnings": [],
+                        "summary": "Игровая папка ещё не выбрана.",
+                        "integrity_mode": "pending",
+                    }
+                    self._status = "Выбери папку игры или скачай клиент."
                     self._phase = "idle"
-        except Exception as exc:
+                return
+
+            report = inspect_client_installation(
+                candidate,
+                progress_callback=lambda done, total, name: self._set_progress(
+                    "integrity", done, total, f"Проверяю файлы: {name}"
+                ),
+            )
             with self._lock:
-                self._status = f"Проверка клиента: {exc}"
+                self._client_health = report
+            write_launcher_log(
+                f"Client self-check: root={candidate}; healthy={report['healthy']}; "
+                f"mode={report.get('integrity_mode')}; checked_hashes={report.get('checked_files')}; "
+                f"issues={report.get('issues')!r}; warnings={report.get('warnings')!r}"
+            )
+            if report["healthy"]:
+                # Inspect recent Windows crash records before enabling Play. This lets
+                # the launcher address a crash that happened before this launcher run.
+                recent = collect_windows_crash_events(
+                    (
+                        "gta_sa.exe",
+                        "multiplayer_browser_cr.exe",
+                        "grand_theft_auto_san_andreas.dll",
+                        "LEDERG-DirectLaunch.exe",
+                    ),
+                    started_at=time.time() - 600.0,
+                    attempts=1,
+                )
+                recent = select_client_crash_events(recent, candidate)
+                if recent:
+                    for event in recent:
+                        write_launcher_log("Recent Windows crash event matched client: " + event)
+                    faulting_module = extract_faulting_module(recent)
+                    faulting_module_path = extract_faulting_module_path(recent)
+                    backup = (
+                        quarantine_faulting_optional_module(
+                            candidate, faulting_module, faulting_module_path
+                        )
+                        if faulting_module and faulting_module_path
+                        else None
+                    )
+                    if backup is not None:
+                        report = inspect_client_installation(candidate, full_scan=False)
+                        with self._lock:
+                            self._client_health = report
+                            self._game_root = candidate
+                            self._status = (
+                                "В журнале Windows найден сбой в локальном ENB d3d9.dll. "
+                                f"Отключил его обратимым способом; резервная копия: {backup.name}. "
+                                "Проверь запуск игры."
+                            )
+                            self._progress = 100.0
+                            self._progress_label = "ENB ОТКЛЮЧЁН · BACKUP OK"
+                            self._phase = "ready" if report["healthy"] else "error"
+                            self._error = "" if report["healthy"] else "; ".join(report["issues"][:5])
+                        write_launcher_log(
+                            f"Proactive ENB workaround applied from recent Windows event: "
+                            f"module={faulting_module}; path={faulting_module_path}; backup={backup}; "
+                            f"health={report!r}"
+                        )
+                        return
+
+                    reason = (
+                        "Recent Windows Application crash for this install: "
+                        f"module={faulting_module or 'unknown'}; "
+                        f"path={faulting_module_path or 'unknown'}; "
+                        + " | ".join(recent[:3])
+                    )
+                    if self._request_auto_repair(candidate, reason):
+                        return
+                    report = dict(report)
+                    report["healthy"] = False
+                    report["issues"] = list(report.get("issues") or []) + [
+                        "В журнале Windows найден свежий ACCESS_VIOLATION для этой установки; "
+                        "автоматическое восстановление ограничено защитой от повторных циклов."
+                    ]
+                    report["summary"] = "Найдена свежая авария Windows; нужна диагностика или ручное восстановление."
+                    with self._lock:
+                        self._client_health = report
+                        self._status = report["summary"]
+                        self._error = self._status
+                        self._phase = "error"
+                    return
+
+                with self._lock:
+                    self._game_root = candidate if (candidate / "gta_sa.exe").is_file() else self._game_root
+                    self._status = (
+                        "Клиент проверен и готов к запуску."
+                        if report.get("integrity_mode") != "structural-only"
+                        else "Структура клиента исправна; контрольные суммы ещё не созданы."
+                    )
+                    self._progress = 100.0
+                    self._progress_label = "АВТОПРОВЕРКА ПРОЙДЕНА"
+                    self._phase = "ready"
+                    self._error = ""
+                return
+
+            reason = "; ".join(report["issues"][:5])
+            if self._request_auto_repair(candidate, reason or "client integrity check failed"):
+                return
+            with self._lock:
+                self._status = (
+                    "Обнаружены ошибки клиента, но автоматическое восстановление не запущено. "
+                    "Открой журнал или нажми «Переустановить»."
+                )
+                self._error = self._status
                 self._phase = "error"
+        except Exception as exc:
+            write_launcher_log("Client self-check failed: " + traceback.format_exc())
+            with self._lock:
+                self._status = f"Ошибка автопроверки клиента: {exc}"
+                self._error = self._status
+                self._phase = "error"
+        finally:
+            with self._lock:
+                self._checking_client = False
 
     def get_state(self) -> dict:
         with self._lock:
             root = self._game_root
             selected = self._install_path
-            busy = self._busy
+            busy = self._busy or self._checking_client
             phase = self._phase
             status = self._status
             progress = self._progress
@@ -486,9 +714,15 @@ class LauncherApi:
             server_detail = self._server_detail
             server_checked_at = self._server_checked_at
             last_exit_code = self._last_exit_code
+            health = dict(self._client_health)
         runtime = find_direct_game_client(root) if root else None
         browser = find_client(root) if root else None
-        client_ready = bool(root and (root / "gta_sa.exe").is_file() and runtime)
+        client_ready = bool(
+            root
+            and health.get("healthy")
+            and (root / "gta_sa.exe").is_file()
+            and runtime
+        )
         display_path = str(root or selected) if (root or selected) else ""
         return {
             "client_ready": client_ready,
@@ -508,6 +742,11 @@ class LauncherApi:
             "server_detail": server_detail,
             "server_checked_at": server_checked_at,
             "last_exit_code": last_exit_code,
+            "client_health_ok": bool(health.get("healthy")),
+            "client_health_summary": str(health.get("summary") or ""),
+            "client_health_issues": list(health.get("issues") or []),
+            "client_health_warnings": list(health.get("warnings") or []),
+            "client_integrity_mode": str(health.get("integrity_mode") or "pending"),
         }
 
     def set_nickname(self, nickname: str) -> dict:
@@ -586,6 +825,32 @@ class LauncherApi:
             endpoint = self._endpoint
         if not root:
             return {"ok": False, "message": "Не найдена папка игры. Выбери папку или скачай клиент."}
+        health = inspect_client_installation(
+            root,
+            progress_callback=lambda done, total, name: self._set_progress(
+                "integrity", done, total, f"Проверяю перед запуском: {name}"
+            ),
+        )
+        with self._lock:
+            self._client_health = health
+        if not health["healthy"]:
+            reason = "; ".join(health["issues"][:5])
+            write_launcher_log(
+                f"Pre-launch check rejected the client: root={root}; issues={health['issues']!r}"
+            )
+            if self._request_auto_repair(root, reason or "pre-launch integrity failure"):
+                return {
+                    "ok": True,
+                    "message": "Нашёл повреждённые файлы и запустил автоматическое восстановление.",
+                }
+            return {
+                "ok": False,
+                "message": (
+                    "Проверка перед запуском обнаружила ошибки. "
+                    "Автовосстановление ограничено защитой от повторных циклов; "
+                    "используй «Переустановить» или открой журнал."
+                ),
+            }
         runtime = find_direct_game_client(root)
         if not (root / "gta_sa.exe").is_file() or not runtime:
             return {
@@ -759,6 +1024,54 @@ class LauncherApi:
                         "No matching Windows Application Error/WER event was found automatically; "
                         "check Windows Event Viewer > Windows Logs > Application."
                     )
+
+                with self._lock:
+                    root = self._game_root or self._install_path
+                faulting_module = extract_faulting_module(events)
+                faulting_module_path = extract_faulting_module_path(events)
+                if root and faulting_module and faulting_module_path:
+                    backup = quarantine_faulting_optional_module(
+                        root, faulting_module, faulting_module_path
+                    )
+                    if backup is not None:
+                        health = inspect_client_installation(root, full_scan=False)
+                        with self._lock:
+                            self._client_health = health
+                            if health["healthy"]:
+                                self._phase = "ready"
+                                self._error = ""
+                                self._status = (
+                                    "Windows указала локальный ENB d3d9.dll в аварийном событии. "
+                                    f"Временно отключил его с резервной копией: {backup.name}. "
+                                    "Запусти игру ещё раз."
+                                )
+                            else:
+                                self._phase = "error"
+                                self._error = (
+                                    "Отключил подтверждённую ENB-обёртку, но проверка нашла другие ошибки. "
+                                    + "; ".join(health["issues"][:4])
+                                )
+                                self._status = self._error
+                        write_launcher_log(
+                            f"Confirmed crash-module workaround applied: module={faulting_module}; "
+                            f"backup={backup}; health={health!r}"
+                        )
+                        return
+
+                reason = (
+                    f"CR:MP access violation {code_hex}; "
+                    f"Windows faulting module={faulting_module or 'not identified'}"
+                )
+                if root and self._request_auto_repair(root, reason):
+                    write_launcher_log(
+                        "Automatic full-client restore started after access violation. "
+                        "It is rate-limited to one automatic attempt per install in 24 hours."
+                    )
+                else:
+                    write_launcher_log(
+                        "Automatic client restore was not started; inspect launcher.log and "
+                        "Windows Application events, or use the manual reinstall action."
+                    )
         except Exception as exc:
             write_launcher_log(f"Process monitor error: {exc!r}")
 
@@ -820,6 +1133,7 @@ class LauncherApi:
 
     def _install_worker(self, selected: Path, reinstall: bool = False) -> None:
         archive: Path | None = None
+        integrity_inventory = DATA_HOME / "pending-client-integrity.json"
         try:
             with self._lock:
                 self._status = (
@@ -855,8 +1169,12 @@ class LauncherApi:
             )
             if manifest is None:
                 install_name = "GTA Criminal Russia"
-                selected_is_game_root = (selected / "gta_sa.exe").is_file()
-                destination = selected.parent if selected_is_game_root or selected.name.casefold() == install_name.casefold() else selected
+                selected_is_game_root = (
+                    (selected / "gta_sa.exe").is_file()
+                    or selected.name.casefold() == install_name.casefold()
+                    or any((selected / marker).exists() for marker in ("multiplayer_c", "models", "data"))
+                )
+                destination = selected.parent if selected_is_game_root else selected
                 archive_url = release.get("archive_url") or ZIP_URL
                 with self._lock:
                     self._status = "Скачиваю игровой клиент из Google Drive…"
@@ -870,10 +1188,12 @@ class LauncherApi:
                     expected_sha256=release.get("sha256", ""),
                     expected_size=int(release.get("archive_size", 0) or 0),
                 )
+                integrity_inventory.unlink(missing_ok=True)
                 count = safe_extract_zip(
                     archive,
                     destination,
                     progress=lambda done, total, name: self._set_progress("extract", done, total, name),
+                    integrity_manifest_path=integrity_inventory,
                 )
                 client = find_client(destination, release.get("client_executable"))
                 if not client:
@@ -888,20 +1208,45 @@ class LauncherApi:
                         "В архиве не найден игровой runtime grand_theft_auto_san_andreas.dll. "
                         "Нужен полный CR:MP-клиент, не только браузер серверов."
                     )
+                prior_enb_backups = list(root.glob("d3d9.dll.lederg-disabled*.bak"))
+                if prior_enb_backups and (root / "d3d9.dll").is_file():
+                    restored_proxy_backup = quarantine_faulting_optional_module(
+                        root, "d3d9.dll", str(root / "d3d9.dll")
+                    )
+                    if restored_proxy_backup is not None:
+                        write_launcher_log(
+                            "Kept previously confirmed ENB proxy disabled after archive repair; "
+                            f"new backup={restored_proxy_backup}"
+                        )
+                finalize_client_integrity_manifest(root, destination, integrity_inventory)
+                health = inspect_client_installation(root, full_scan=False)
+                if not health["healthy"]:
+                    raise RuntimeError(
+                        "После распаковки автопроверка обнаружила проблемы: "
+                        + "; ".join(health["issues"][:8])
+                    )
                 try:
                     archive.unlink(missing_ok=True)
                 except OSError:
                     pass
+                integrity_inventory.unlink(missing_ok=True)
                 self._write_install_path(root)
                 with self._lock:
                     self._game_root = root
                     self._install_path = root
+                    self._client_health = health
                     self._progress = 100.0
-                    self._progress_label = "ГОТОВО"
-                    self._status = f"Клиент установлен из Google Drive ({count} файлов)."
+                    self._progress_label = "ПРОВЕРКА ПРОЙДЕНА"
+                    self._status = (
+                        f"Клиент установлен и проверен ({count} файлов). "
+                        f"{health['summary']}"
+                    )
                     self._phase = "ready"
                     self._error = ""
-                write_launcher_log(f"Google Drive client installation completed: root={root}; files={count}")
+                write_launcher_log(
+                    f"Google Drive client installation completed and verified: "
+                    f"root={root}; files={count}; health={health!r}"
+                )
                 return
 
             install_name = str(manifest.get("install_root", "GTA Criminal Russia"))
@@ -953,6 +1298,11 @@ class LauncherApi:
                 self._error = str(exc)
                 self._status = f"Ошибка обновления: {exc}"
         finally:
+            try:
+                integrity_inventory.unlink(missing_ok=True)
+                integrity_inventory.with_name(integrity_inventory.name + ".tmp").unlink(missing_ok=True)
+            except OSError:
+                pass
             with self._lock:
                 self._busy = False
 

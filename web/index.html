@@ -223,7 +223,7 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
   </main>
 
   <footer class="footer">
-    <div>LEDERG <strong>CR:MP</strong> &nbsp;·&nbsp; BUILD <strong>2.2</strong></div>
+    <div>LEDERG <strong>CR:MP</strong> &nbsp;·&nbsp; BUILD <strong>2.4</strong></div>
     <div class="footer-right"><span id="clientBadge">CLIENT CHECK</span><button class="footer-link" id="openLog">ЖУРНАЛ</button><button class="footer-link" id="changeFolder">ИЗМЕНИТЬ ПАПКУ</button></div>
   </footer>
 </div>
@@ -271,7 +271,14 @@ function applyState(state) {
   const progress = Math.max(0, Math.min(100, Number(state.progress || 0)));
   $("endpoint").textContent = state.endpoint || "АДРЕС НЕ НАЙДЕН";
   $("installPath").textContent = state.install_path || "По умолчанию: Games";
-  $("clientBadge").textContent = ready ? "КЛИЕНТ ГОТОВ" : (working ? "ИДЁТ УСТАНОВКА" : "НУЖНА УСТАНОВКА");
+  $("clientBadge").textContent = ready
+    ? (state.client_integrity_mode === "structural-only" ? "СТРУКТУРА OK" : "ФАЙЛЫ OK")
+    : (working ? "АВТОРЕМОНТ" : "НУЖНА ПРОВЕРКА");
+  $("clientBadge").title = [
+    state.client_health_summary || "",
+    ...(state.client_health_warnings || []),
+    ...(state.client_health_issues || [])
+  ].filter(Boolean).join("\\n");
   const serverOnline = state.server_online === true;
   const serverOffline = state.server_online === false;
   const serverPing = Number.isFinite(Number(state.server_ping_ms)) && state.server_ping_ms !== null
