@@ -224,7 +224,7 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
 
   <footer class="footer">
     <div>LEDERG <strong>CR:MP</strong> &nbsp;·&nbsp; BUILD <strong>2.2</strong></div>
-    <div class="footer-right"><span id="clientBadge">CLIENT CHECK</span><button class="footer-link" id="changeFolder">ИЗМЕНИТЬ ПАПКУ</button></div>
+    <div class="footer-right"><span id="clientBadge">CLIENT CHECK</span><button class="footer-link" id="openLog">ЖУРНАЛ</button><button class="footer-link" id="changeFolder">ИЗМЕНИТЬ ПАПКУ</button></div>
   </footer>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -371,6 +371,10 @@ $("reinstallButton").addEventListener("click", async () => {
 $("nickname").addEventListener("change", () => apiCall("set_nickname", $("nickname").value));
 $("openFolder").addEventListener("click", async () => {
   const result = await apiCall("open_game_folder");
+  if (result && result.message) toast(result.message);
+});
+$("openLog").addEventListener("click", async () => {
+  const result = await apiCall("open_log");
   if (result && result.message) toast(result.message);
 });
 $("copyEndpoint").addEventListener("click", async () => {
