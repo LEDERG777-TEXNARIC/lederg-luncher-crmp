@@ -42,6 +42,7 @@ from launcher import (
     finalize_client_integrity_manifest,
     inspect_client_installation,
     extract_faulting_module,
+    extract_faulting_module_path,
     quarantine_faulting_optional_module,
     sanitize_nickname,
     write_launcher_log,
@@ -958,8 +959,11 @@ class LauncherApi:
                 with self._lock:
                     root = self._game_root or self._install_path
                 faulting_module = extract_faulting_module(events)
-                if root and faulting_module:
-                    backup = quarantine_faulting_optional_module(root, faulting_module)
+                faulting_module_path = extract_faulting_module_path(events)
+                if root and faulting_module and faulting_module_path:
+                    backup = quarantine_faulting_optional_module(
+                        root, faulting_module, faulting_module_path
+                    )
                     if backup is not None:
                         health = inspect_client_installation(root, full_scan=False)
                         with self._lock:
