@@ -459,7 +459,7 @@ class LauncherApi:
             except (TypeError, ValueError):
                 previous_attempt = 0.0
             same_install = str(previous.get("root") or "").casefold() == resolved.casefold()
-            previous_result = str(previous.get("result") or "in_progress").casefold()
+            previous_result = str(previous.get("result") or "failed").casefold()
             cooldown = (
                 AUTO_REPAIR_FAILURE_RETRY_SECONDS
                 if previous_result == "failed"
