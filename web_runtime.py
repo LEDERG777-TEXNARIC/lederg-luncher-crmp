@@ -787,15 +787,18 @@ class LauncherApi:
             health = dict(self._client_health)
         runtime = find_direct_game_client(root) if root else None
         browser = find_client(root) if root else None
+        client_candidate = root or self._find_client_candidate(selected)
+        client_found = bool(client_candidate and client_candidate.is_dir())
         client_ready = bool(
             root
             and health.get("healthy")
             and (root / "gta_sa.exe").is_file()
             and runtime
         )
-        display_path = str(root or selected) if (root or selected) else ""
+        display_path = str(root or client_candidate or selected) if (root or client_candidate or selected) else ""
         return {
             "client_ready": client_ready,
+            "client_found": client_found,
             "install_path": display_path,
             "endpoint": endpoint,
             "nickname": nickname,
