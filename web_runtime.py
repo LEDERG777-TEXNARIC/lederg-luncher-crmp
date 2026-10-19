@@ -565,25 +565,21 @@ class LauncherApi:
                     "launch_mode": DEFAULT_LAUNCH_MODE,
                 }
 
-            manifest_url = release.get("files_manifest_url") or CLIENT_FILES_MANIFEST_URL
+            # The full client payload is intentionally sourced only from the
+            # pinned Google Drive archive. Do not contact Cloudpub or a per-file manifest.
+            manifest_url = ""
             manifest = None
-            manifest_error = None
-            try:
-                manifest = fetch_files_manifest(manifest_url, http=HTTP)
-            except Exception as exc:
-                manifest_error = exc
-                write_launcher_log(f"Client file manifest unavailable; trying verified ZIP fallback: {exc!r}")
-
-            # The ZIP route is only a fallback for an unavailable manifest. Once
-            # a trusted manifest is fetched, its per-file hashes and resumable
-            # updates remain the source of truth.
+            write_launcher_log(
+                f"Drive-only client source selected: {ZIP_URL}; "
+                f"release metadata version={release.get('version', 'unknown')}."
+            )
             if manifest is None:
                 install_name = "GTA Criminal Russia"
                 selected_is_game_root = (selected / "gta_sa.exe").is_file()
                 destination = selected.parent if selected_is_game_root or selected.name.casefold() == install_name.casefold() else selected
                 archive_url = release.get("archive_url") or ZIP_URL
                 with self._lock:
-                    self._status = "Манифест недоступен. Скачиваю резервный ZIP-архив…"
+                    self._status = "Скачиваю игровой клиент из Google Drive…"
                     self._phase = "download"
                     self._progress = 0.0
                     self._progress_label = "ЗАГРУЗКА АРХИВА"
@@ -622,10 +618,10 @@ class LauncherApi:
                     self._install_path = root
                     self._progress = 100.0
                     self._progress_label = "ГОТОВО"
-                    self._status = f"Клиент проверен через резервный ZIP ({count} файлов)."
+                    self._status = f"Клиент установлен из Google Drive ({count} файлов)."
                     self._phase = "ready"
                     self._error = ""
-                write_launcher_log(f"Client ZIP fallback completed: root={root}; files={count}")
+                write_launcher_log(f"Google Drive client installation completed: root={root}; files={count}")
                 return
 
             install_name = str(manifest.get("install_root", "GTA Criminal Russia"))
