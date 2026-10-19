@@ -17,8 +17,8 @@
     },
     {
       "path": "web_runtime.py",
-      "sha256": "e27e6d035bcfd69df5ce8a6e24f02b2d146fdcb535cfc08ef52b3211c94e2cb6",
-      "size": 44858
+      "sha256": "a41dba28e33439f85c7494f6a55a6e813cb0cd1ac9efabf930283d02b3f34a52",
+      "size": 44974
     },
     {
       "path": "web/index.html",
