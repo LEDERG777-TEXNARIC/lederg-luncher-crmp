@@ -492,8 +492,16 @@ def quarantine_faulting_optional_module(
         return None
     proxy = root / "d3d9.dll"
     backup = root / ENB_DISABLED_BACKUP
-    if not proxy.is_file() or proxy.is_symlink() or backup.exists():
+    if not proxy.is_file() or proxy.is_symlink():
         return None
+    if backup.exists():
+        suffix = 1
+        while True:
+            candidate = root / f"d3d9.dll.lederg-disabled-{suffix}.bak"
+            if not candidate.exists():
+                backup = candidate
+                break
+            suffix += 1
     try:
         proxy.replace(backup)
         return backup
