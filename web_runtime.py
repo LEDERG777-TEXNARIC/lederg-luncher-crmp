@@ -1208,6 +1208,16 @@ class LauncherApi:
                         "В архиве не найден игровой runtime grand_theft_auto_san_andreas.dll. "
                         "Нужен полный CR:MP-клиент, не только браузер серверов."
                     )
+                prior_enb_backups = list(root.glob("d3d9.dll.lederg-disabled*.bak"))
+                if prior_enb_backups and (root / "d3d9.dll").is_file():
+                    restored_proxy_backup = quarantine_faulting_optional_module(
+                        root, "d3d9.dll", str(root / "d3d9.dll")
+                    )
+                    if restored_proxy_backup is not None:
+                        write_launcher_log(
+                            "Kept previously confirmed ENB proxy disabled after archive repair; "
+                            f"new backup={restored_proxy_backup}"
+                        )
                 finalize_client_integrity_manifest(root, destination, integrity_inventory)
                 health = inspect_client_installation(root, full_scan=False)
                 if not health["healthy"]:
