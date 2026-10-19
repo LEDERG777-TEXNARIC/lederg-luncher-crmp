@@ -54,6 +54,33 @@ DEFAULT_LAUNCH_MODE = "direct"
 DEFAULT_CLIENT_EXECUTABLE = "multiplayer_c/multiplayer_browser_cr.exe"
 DIRECT_LAUNCHER_NAME = "LEDERG-DirectLaunch.exe"
 
+CLIENT_INTEGRITY_FILENAME = ".lederg-client-integrity.json"
+CLIENT_REQUIRED_DIRECTORIES = (
+    "audio",
+    "data",
+    "models",
+    "text",
+    "multiplayer_c",
+)
+CLIENT_REQUIRED_FILES = (
+    "gta_sa.exe",
+    "multiplayer_c/multiplayer_browser_cr.exe",
+    "multiplayer_c/grand_theft_auto_san_andreas.dll",
+    "multiplayer_c/san_andreas_multiplayer.dll",
+    "data/handling.cfg",
+    "models/gta3.img",
+    "models/gamemod.img",
+    "text/american.gxt",
+)
+CLIENT_PE_FILES = (
+    "gta_sa.exe",
+    "multiplayer_c/multiplayer_browser_cr.exe",
+    "multiplayer_c/grand_theft_auto_san_andreas.dll",
+    "multiplayer_c/san_andreas_multiplayer.dll",
+)
+CLIENT_FULL_SCAN_INTERVAL_SECONDS = 7 * 24 * 60 * 60
+ENB_DISABLED_BACKUP = "d3d9.dll.lederg-disabled.bak"
+
 BG = "#000000"
 BG_SOFT = "#050505"
 RED = "#ff263f"
@@ -72,6 +99,357 @@ HTTP.headers.update({
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36"
     )
 })
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _x86_pe_error(path: Path) -> str | None:
+    """Check DOS/PE signatures and the expected 32-bit x86 machine type."""
+    try:
+        with path.open("rb") as stream:
+            dos = stream.read(64)
+            if len(dos) < 64 or dos[:2] != b"MZ":
+                return "отсутствует заголовок MZ"
+            pe_offset = int.from_bytes(dos[0x3C:0x40], "little")
+            if pe_offset < 64 or pe_offset > path.stat().st_size - 6:
+                return "неверный указатель на PE-заголовок"
+            stream.seek(pe_offset)
+            pe = stream.read(6)
+        if len(pe) != 6 or pe[:4] != b"PE\0\0":
+            return "неверная сигнатура PE"
+        machine = int.from_bytes(pe[4:6], "little")
+        if machine != 0x014C:
+            return f"ожидается x86 (0x014C), обнаружен machine=0x{machine:04X}"
+        return None
+    except OSError as exc:
+        return f"не удалось прочитать PE-заголовок: {exc}"
+
+
+def write_client_integrity_manifest(
+    install_root: Path,
+    entries: list[dict],
+    *,
+    source: str = "google-drive-archive",
+    last_full_scan_at: float | None = None,
+) -> Path:
+    """Persist hashes for files verified while extracting the downloaded client archive."""
+    root = Path(install_root).resolve()
+    normalized = []
+    seen: set[str] = set()
+    for item in entries:
+        raw = str(item.get("path") or "").replace("\\", "/")
+        relative = PurePosixPath(raw)
+        if (
+            not raw
+            or relative.is_absolute()
+            or raw.startswith("/")
+            or any(part in ("", ".", "..") for part in relative.parts)
+            or ":" in relative.parts[0]
+            or "\x00" in raw
+        ):
+            raise ValueError(f"Unsafe client integrity path: {raw!r}")
+        key = relative.as_posix().casefold()
+        if key in seen:
+            raise ValueError(f"Duplicate path in client integrity manifest: {raw}")
+        seen.add(key)
+        expected_size = int(item.get("size", -1))
+        digest = str(item.get("sha256") or "").lower()
+        if expected_size < 0 or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"Invalid integrity size or SHA-256 for {raw}")
+        target = root.joinpath(*relative.parts)
+        try:
+            target.resolve().relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Integrity path escapes client root: {raw}") from exc
+        if target.is_symlink() or not target.is_file():
+            raise RuntimeError(f"Integrity file is missing or unsafe: {raw}")
+        info = target.stat()
+        if info.st_size != expected_size:
+            raise RuntimeError(f"Integrity size mismatch immediately after install: {raw}")
+        normalized.append({
+            "path": relative.as_posix(),
+            "size": expected_size,
+            "sha256": digest,
+            "crc32": str(item.get("crc32") or "").lower(),
+            "mtime_ns": info.st_mtime_ns,
+        })
+    if not normalized:
+        raise RuntimeError("Archive extraction did not produce an integrity inventory.")
+    normalized.sort(key=lambda item: item["path"].casefold())
+    payload = {
+        "schema": 1,
+        "source": str(source),
+        "created_at": int(time.time()),
+        "last_full_scan_at": int(last_full_scan_at if last_full_scan_at is not None else time.time()),
+        "files": normalized,
+    }
+    destination = root / CLIENT_INTEGRITY_FILENAME
+    temporary = destination.with_name(destination.name + ".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(temporary, destination)
+    return destination
+
+
+def finalize_client_integrity_manifest(
+    install_root: Path, extraction_root: Path, inventory_path: Path
+) -> Path:
+    """Rebase ZIP inventory paths from extraction destination to the discovered game root."""
+    root = Path(install_root).resolve()
+    base = Path(extraction_root).resolve()
+    inventory = json.loads(Path(inventory_path).read_text(encoding="utf-8"))
+    if not isinstance(inventory, dict) or inventory.get("schema") != 1:
+        raise ValueError("Invalid temporary client integrity inventory.")
+    raw_entries = inventory.get("files")
+    if not isinstance(raw_entries, list):
+        raise ValueError("Client integrity inventory has no file list.")
+    entries = []
+    for item in raw_entries:
+        if not isinstance(item, dict):
+            continue
+        raw = str(item.get("path") or "").replace("\\", "/")
+        relative = PurePosixPath(raw)
+        if not raw or relative.is_absolute() or any(part in ("", ".", "..") for part in relative.parts):
+            raise ValueError(f"Unsafe path in extracted inventory: {raw!r}")
+        extracted = base.joinpath(*relative.parts)
+        try:
+            extracted_resolved = extracted.resolve()
+            rebased = extracted_resolved.relative_to(root)
+        except (OSError, ValueError):
+            # ZIPs may contain companion files beside the game root; they aren't
+            # managed by the client-root integrity manifest.
+            continue
+        if extracted.is_symlink() or not extracted.is_file():
+            continue
+        entries.append({
+            "path": rebased.as_posix(),
+            "size": int(item.get("size", -1)),
+            "sha256": str(item.get("sha256") or ""),
+            "crc32": str(item.get("crc32") or ""),
+        })
+    if not entries:
+        raise RuntimeError("No extracted archive files were found inside the game root.")
+    return write_client_integrity_manifest(root, entries, source="google-drive-archive")
+
+
+def inspect_client_installation(
+    install_root: Path,
+    *,
+    full_scan: bool = False,
+    progress_callback=None,
+) -> dict:
+    """Validate the CR:MP folder layout, PE architecture, and installed-file hashes."""
+    root = Path(install_root).resolve()
+    issues: list[str] = []
+    warnings: list[str] = []
+    missing_files: list[str] = []
+    checked_files = 0
+    integrity_mode = "structural-only"
+    inventory_path = root / CLIENT_INTEGRITY_FILENAME
+
+    if not root.is_dir():
+        issues.append(f"Не найдена папка клиента: {root}")
+    else:
+        for relative in CLIENT_REQUIRED_DIRECTORIES:
+            if not (root / relative).is_dir():
+                issues.append(f"Отсутствует папка клиента: {relative}")
+        for relative in CLIENT_REQUIRED_FILES:
+            target = root / relative
+            if not target.is_file() or target.stat().st_size <= 0 if target.exists() else True:
+                missing_files.append(relative)
+                issues.append(f"Отсутствует или пустой обязательный файл: {relative}")
+        for relative in CLIENT_PE_FILES:
+            target = root / relative
+            if target.is_file():
+                pe_error = _x86_pe_error(target)
+                if pe_error:
+                    issues.append(f"Повреждён или не подходит бинарный файл {relative}: {pe_error}")
+
+        if (root / "d3d9.dll").is_file() and (root / "enbseries.ini").is_file():
+            warnings.append(
+                "Найдена локальная графическая обёртка ENB (d3d9.dll); "
+                "она будет отключена только если Windows подтвердит её связь со сбоем."
+            )
+
+        if inventory_path.is_file():
+            try:
+                payload = json.loads(inventory_path.read_text(encoding="utf-8"))
+                if not isinstance(payload, dict) or payload.get("schema") != 1:
+                    raise ValueError("unsupported schema")
+                entries = payload.get("files")
+                if not isinstance(entries, list) or not entries:
+                    raise ValueError("empty file inventory")
+                if len(entries) > 250000:
+                    raise ValueError("file inventory is too large")
+                last_scan = float(payload.get("last_full_scan_at") or 0)
+                if not full_scan and time.time() - last_scan >= CLIENT_FULL_SCAN_INTERVAL_SECONDS:
+                    full_scan = True
+                total_bytes = sum(max(0, int(entry.get("size", 0))) for entry in entries if isinstance(entry, dict))
+                processed_bytes = 0
+                seen: set[str] = set()
+                changed_manifest = False
+                integrity_mode = "full" if full_scan else "fast"
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        issues.append("Некорректная запись контрольной суммы клиента")
+                        continue
+                    raw = str(entry.get("path") or "").replace("\\", "/")
+                    relative = PurePosixPath(raw)
+                    if (
+                        not raw
+                        or relative.is_absolute()
+                        or raw.startswith("/")
+                        or any(part in ("", ".", "..") for part in relative.parts)
+                        or ":" in relative.parts[0]
+                        or "\x00" in raw
+                    ):
+                        issues.append(f"Небезопасный путь в манифесте клиента: {raw!r}")
+                        continue
+                    key = relative.as_posix().casefold()
+                    if key in seen:
+                        issues.append(f"Повтор пути в манифесте клиента: {raw}")
+                        continue
+                    seen.add(key)
+                    expected_size = int(entry.get("size", -1))
+                    expected_hash = str(entry.get("sha256") or "").lower()
+                    if expected_size < 0 or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+                        issues.append(f"Некорректная контрольная сумма: {raw}")
+                        continue
+                    if (
+                        key == "d3d9.dll"
+                        and (root / ENB_DISABLED_BACKUP).is_file()
+                    ):
+                        processed_bytes += expected_size
+                        continue
+                    target = root.joinpath(*relative.parts)
+                    try:
+                        target.resolve().relative_to(root)
+                    except ValueError:
+                        issues.append(f"Путь файла вышел за пределы клиента: {raw}")
+                        continue
+                    try:
+                        info = target.stat()
+                    except OSError:
+                        issues.append(f"Пропал установленный файл: {raw}")
+                        processed_bytes += expected_size
+                        if progress_callback:
+                            progress_callback(processed_bytes, total_bytes, raw)
+                        continue
+                    if not target.is_file() or target.is_symlink():
+                        issues.append(f"Ожидался обычный файл: {raw}")
+                        processed_bytes += expected_size
+                        if progress_callback:
+                            progress_callback(processed_bytes, total_bytes, raw)
+                        continue
+                    if info.st_size != expected_size:
+                        issues.append(
+                            f"Размер установленного файла изменился: {raw} "
+                            f"({info.st_size} вместо {expected_size} байт)"
+                        )
+                        processed_bytes += expected_size
+                        if progress_callback:
+                            progress_callback(processed_bytes, total_bytes, raw)
+                        continue
+                    old_mtime = int(entry.get("mtime_ns", -1))
+                    must_hash = full_scan or info.st_mtime_ns != old_mtime or key in {
+                        name.casefold() for name in CLIENT_PE_FILES
+                    }
+                    if must_hash:
+                        actual_hash = _sha256_file(target)
+                        checked_files += 1
+                        if actual_hash != expected_hash:
+                            issues.append(f"Не совпала SHA-256 контрольная сумма: {raw}")
+                        elif info.st_mtime_ns != old_mtime:
+                            entry["mtime_ns"] = info.st_mtime_ns
+                            changed_manifest = True
+                    processed_bytes += expected_size
+                    if progress_callback:
+                        progress_callback(processed_bytes, total_bytes, raw)
+                if full_scan and not issues:
+                    payload["last_full_scan_at"] = int(time.time())
+                    changed_manifest = True
+                if changed_manifest and not issues:
+                    temporary = inventory_path.with_name(inventory_path.name + ".tmp")
+                    temporary.write_text(
+                        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                        encoding="utf-8",
+                    )
+                    os.replace(temporary, inventory_path)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+                issues.append(f"Не удалось проверить контрольные суммы клиента: {exc}")
+        else:
+            warnings.append(
+                "Для этой старой установки нет эталонного манифеста; "
+                "проверены обязательные файлы и их PE-заголовки."
+            )
+
+    healthy = not issues
+    if healthy:
+        summary = (
+            f"Проверены обязательные компоненты и структура клиента; "
+            f"проверок SHA-256: {checked_files} ({integrity_mode})."
+        )
+    else:
+        summary = f"Найдены проблемы клиента: {len(issues)}."
+    return {
+        "healthy": healthy,
+        "root": str(root),
+        "issues": issues,
+        "warnings": warnings,
+        "missing_files": missing_files,
+        "checked_files": checked_files,
+        "integrity_mode": integrity_mode,
+        "summary": summary,
+    }
+
+
+def extract_faulting_module(events: str | list[str] | tuple[str, ...]) -> str | None:
+    """Parse the faulting-module name from a Windows Application Error event."""
+    texts = [events] if isinstance(events, str) else list(events or [])
+    for event in texts:
+        text = str(event or "")
+        for pattern in (
+            r"Faulting module name:\s*([^,\r\n]+)",
+            r"Имя сбойного модуля:\s*([^,\r\n]+)",
+        ):
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                name = match.group(1).strip().strip('"')
+                return Path(name.replace("\\", "/")).name.casefold() or None
+        for pattern in (
+            r"Faulting module path:\s*([^\r\n]+)",
+            r"Путь сбойного модуля:\s*([^\r\n]+)",
+        ):
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                name = match.group(1).strip().strip('"')
+                return Path(name.replace("\\", "/")).name.casefold() or None
+    return None
+
+
+def quarantine_faulting_optional_module(install_root: Path, module_name: str) -> Path | None:
+    """Reversibly disable only a confirmed local ENB D3D9 proxy involved in the crash."""
+    root = Path(install_root).resolve()
+    if Path(str(module_name or "").replace("\\", "/")).name.casefold() != "d3d9.dll":
+        return None
+    if not (root / "enbseries.ini").is_file():
+        return None
+    if not (root / "ENBSeries_License.txt").is_file():
+        return None
+    proxy = root / "d3d9.dll"
+    backup = root / ENB_DISABLED_BACKUP
+    if not proxy.is_file() or proxy.is_symlink() or backup.exists():
+        return None
+    try:
+        proxy.replace(backup)
+        return backup
+    except OSError:
+        return None
 
 
 def sanitize_nickname(value: str) -> str:
