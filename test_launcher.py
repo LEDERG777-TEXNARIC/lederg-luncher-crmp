@@ -302,7 +302,7 @@ class LauncherTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as temp:
                 destination = Path(temp)
-                partial = destination / ".lederg-crmp-download.zip.part"
+                partial = destination / ".lederg-crmp-google-drive.zip.part"
                 partial.write_bytes(archive_bytes[:len(archive_bytes) // 3])
                 url = f"http://127.0.0.1:{server.server_port}/downloads/client.zip"
                 digest = hashlib.sha256(archive_bytes).hexdigest()
