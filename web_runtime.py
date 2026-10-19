@@ -715,6 +715,15 @@ class LauncherApi:
                 diagnosis = {}
             else:
                 diagnosis = diagnose_auto_repair_failure(str(detail or ""), str(phase or "repair"))
+                try:
+                    attempted_at = float(payload.get("attempted_at") or time.time())
+                except (ValueError, TypeError):
+                    attempted_at = time.time()
+                remaining = max(
+                    0.0,
+                    AUTO_REPAIR_FAILURE_RETRY_SECONDS - max(0.0, time.time() - attempted_at),
+                )
+                diagnosis["retry_minutes"] = max(0, int((remaining + 59) // 60))
                 payload["diagnostic"] = diagnosis
             temporary = AUTO_REPAIR_STATE_FILE.with_name(AUTO_REPAIR_STATE_FILE.name + ".tmp")
             temporary.write_text(
@@ -988,7 +997,7 @@ class LauncherApi:
             server_checked_at = self._server_checked_at
             last_exit_code = self._last_exit_code
             health = dict(self._client_health)
-            repair_failure = dict(self._repair_failure)
+            repair_failure = dict(getattr(self, "_repair_failure", {}) or {})
         runtime = find_direct_game_client(root) if root else None
         browser = find_client(root) if root else None
         client_candidate = root or self._find_client_candidate(selected)
