@@ -117,6 +117,27 @@ def diagnose_auto_repair_failure(detail: str, phase: str = "") -> dict:
             "Проверь, что архив не удалён, не перемещён и что ссылка на нужный файл всё ещё актуальна."
         )
     elif (
+        re.search(r"\\b5\\d{2}\\b", folded)
+        and ("http" in folded or "google drive" in folded or "drive" in folded)
+    ):
+        problem = "Google Drive вернул временную серверную ошибку"
+        advice = (
+            "Это HTTP-ошибка на стороне сервиса или промежуточного шлюза. "
+            "Повтори загрузку позже; если ошибка повторяется, проверь доступ к архиву и сетевой фильтр."
+        )
+    elif (
+        "загрузка оборвалась раньше времени" in folded
+        or "скачан не полностью" in folded
+        or "incomplete read" in folded
+        or "incompleteread" in folded
+        or "получено " in folded and " байт" in folded and " из " in folded
+    ):
+        problem = "Загрузка архива завершилась не полностью"
+        advice = (
+            "Сервер или соединение оборвали передачу до получения всех байтов. "
+            "Лаунчер должен продолжить частичную загрузку; повтори попытку и проверь стабильность соединения."
+        )
+    elif (
         "429" in folded
         or "quotaexceeded" in folded
         or "too many requests" in folded
