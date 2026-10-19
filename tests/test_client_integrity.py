@@ -15,6 +15,7 @@ from launcher import (
     inspect_client_installation,
     quarantine_faulting_optional_module,
     safe_extract_zip,
+    select_client_crash_events,
     write_client_integrity_manifest,
 )
 
@@ -161,6 +162,32 @@ class ClientSelfCheckTests(unittest.TestCase):
             extract_faulting_module_path(event),
             "C:\\Games\\GTA Criminal Russia\\d3d9.dll",
         )
+
+    def test_recent_crash_events_are_filtered_to_this_install_and_access_violation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "GTA Criminal Russia"
+            root.mkdir()
+            matched = (
+                "Faulting application path: "
+                + str(root / "gta_sa.exe")
+                + "\\nFaulting module name: d3d9.dll; Exception code: 0xc0000005"
+            )
+            other_install = (
+                "Faulting application path: C:\\Other\\gta_sa.exe; "
+                "Faulting module name: d3d9.dll; Exception code: 0xc0000005"
+            )
+            other_error = (
+                "Faulting application path: "
+                + str(root / "gta_sa.exe")
+                + "\\nFaulting module name: ntdll.dll; Exception code: 0xc0000409"
+            )
+
+            found = select_client_crash_events(
+                [matched, other_install, other_error], root
+            )
+
+        self.assertEqual(found, [matched])
+
 
     def test_only_confirmed_local_enb_d3d9_proxy_is_quarantined(self):
         with tempfile.TemporaryDirectory() as temp:
