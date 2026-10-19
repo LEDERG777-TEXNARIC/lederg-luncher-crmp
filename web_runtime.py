@@ -52,6 +52,117 @@ NICK_FILE = DATA_HOME / "nickname.txt"
 
 SERVER_FILE = DATA_HOME / "server_address.txt"
 
+
+def parse_windows_crash_event_payload(
+    payload_text: str, executable_names: list[str] | tuple[str, ...]
+) -> list[str]:
+    """Return Windows Application Error events that mention one of our game binaries."""
+    try:
+        payload = json.loads(payload_text)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if isinstance(payload, dict):
+        events = [payload]
+    elif isinstance(payload, list):
+        events = payload
+    else:
+        return []
+
+    names = {
+        str(name).replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        for name in executable_names
+        if str(name).strip()
+    }
+    if not names:
+        return []
+
+    matches = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        message = str(event.get("Message") or "")
+        folded_message = message.casefold()
+        if not message or not any(name in folded_message for name in names):
+            continue
+        timestamp = str(event.get("TimeCreated") or "unknown time")
+        event_id = str(event.get("Id") if event.get("Id") is not None else "?")
+        provider = str(event.get("ProviderName") or "unknown provider")
+        matches.append(
+            f"Windows Application event: time={timestamp}; id={event_id}; "
+            f"provider={provider}\n{message}"
+        )
+    return matches[:10]
+
+
+def collect_windows_crash_events(
+    executable_names: list[str] | tuple[str, ...],
+    *,
+    started_at: float | None = None,
+    runner=None,
+    sleeper=None,
+    attempts: int = 3,
+) -> list[str]:
+    """Query recent Application Error/WER records after a game crash, without elevation."""
+    if os.name != "nt":
+        return []
+    normalized_names = [
+        str(name).replace("\\", "/").rsplit("/", 1)[-1]
+        for name in executable_names
+        if str(name).strip()
+    ]
+    if not normalized_names:
+        return []
+
+    runner = runner or subprocess.run
+    sleeper = sleeper or time.sleep
+    launch_epoch = float(started_at if started_at is not None else time.time() - 600.0)
+    from_epoch_ms = max(0, int((launch_epoch - 3.0) * 1000))
+    script = (
+        "$ErrorActionPreference='SilentlyContinue'; "
+        f"$from=[DateTimeOffset]::FromUnixTimeMilliseconds({from_epoch_ms}).LocalDateTime; "
+        "$events = @(Get-WinEvent -FilterHashtable "
+        "@{LogName='Application'; Id=1000,1001; StartTime=$from} "
+        "-MaxEvents 50 -ErrorAction SilentlyContinue | "
+        "Select-Object @{Name='TimeCreated';Expression={$_.TimeCreated.ToString('o')}}, "
+        "Id, ProviderName, Message); "
+        "if ($events.Count -gt 0) { $events | ConvertTo-Json -Depth 3 -Compress }"
+    )
+    command = [
+        "powershell.exe",
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+    ]
+    for attempt in range(max(1, int(attempts))):
+        try:
+            result = runner(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=8,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.returncode == 0:
+                matches = parse_windows_crash_event_payload(
+                    result.stdout or "", normalized_names
+                )
+                if matches:
+                    return matches
+            elif getattr(result, "stderr", ""):
+                write_launcher_log(
+                    "Windows crash-event query returned an error: "
+                    + str(result.stderr).strip()[:1200]
+                )
+        except Exception as exc:
+            write_launcher_log(f"Could not query Windows Application crash events: {exc!r}")
+        if attempt + 1 < max(1, int(attempts)):
+            sleeper(0.9)
+    return []
+
 VK_X = 0x58
 VK_T = 0x54
 VK_RETURN = 0x0D
@@ -503,6 +614,7 @@ class LauncherApi:
                 f"cwd={working_directory}; endpoint={host}:{port}; nickname={self._nickname}; "
                 f"command={subprocess.list2cmdline(command)!r}"
             )
+            launch_started_at = time.time()
             process = subprocess.Popen(
                 command,
                 cwd=str(working_directory),
@@ -518,7 +630,12 @@ class LauncherApi:
                 self._error = ""
             write_launcher_log(f"Native CR:MP runtime process started: pid={process.pid}")
             self._start_xpanel_hotkey(process, root)
-            threading.Thread(target=self._monitor_process, args=(process,), daemon=True).start()
+            threading.Thread(
+                target=self._monitor_process,
+                args=(process, launch_started_at),
+                daemon=True,
+                name="LEDERG-game-process-monitor",
+            ).start()
             return {"ok": True, "message": f"Запускаю CR:MP и подключаю к {host}:{port}."}
         except Exception as exc:
             write_launcher_log(f"ERROR launching native CR:MP runtime: {traceback.format_exc()}")
@@ -580,7 +697,9 @@ class LauncherApi:
                 self._xpanel_stop = None
             write_launcher_log(f"X hotkey watcher stopped for CR:MP PID {process.pid}.")
 
-    def _monitor_process(self, process: subprocess.Popen) -> None:
+    def _monitor_process(
+        self, process: subprocess.Popen, started_at: float | None = None
+    ) -> None:
         try:
             code = process.wait()
             if self._xpanel_stop is not None and self._process is process:
@@ -601,6 +720,45 @@ class LauncherApi:
                 f"Native runtime exited: pid={process.pid}; code={code}; hex={code_hex}; "
                 f"command={process.args!r}"
             )
+
+            if (int(code) & 0xFFFFFFFF) == 0xC0000005:
+                command = process.args
+                command_items = [command] if isinstance(command, str) else list(command or [])
+                executable_names = [
+                    str(item).replace("\\", "/").rsplit("/", 1)[-1]
+                    for item in command_items
+                    if str(item).strip()
+                ]
+                executable_names.extend([
+                    "LEDERG-DirectLaunch.exe",
+                    "multiplayer_browser.cr.exe",
+                    "gta_sa.exe",
+                    "grand_theft_auto_san_andreas.dll",
+                ])
+                events = collect_windows_crash_events(
+                    executable_names, started_at=started_at
+                )
+                if events:
+                    for event in events:
+                        write_launcher_log(event)
+                    with self._lock:
+                        if self._process is None and self._last_exit_code == int(code):
+                            original = self._error or self._status
+                            self._error = original.replace(
+                                "Если повторится, нужен журнал Windows «Приложение» "
+                                "с именем сбойного модуля.",
+                                "Событие Windows записано в «ЖУРНАЛ» лаунчера.",
+                            )
+                            self._status = self._error
+                    write_launcher_log(
+                        "Windows crash-event diagnostics collected automatically; "
+                        "see launcher.log for the faulting application/module."
+                    )
+                else:
+                    write_launcher_log(
+                        "No matching Windows Application Error/WER event was found automatically; "
+                        "check Windows Event Viewer > Windows Logs > Application."
+                    )
         except Exception as exc:
             write_launcher_log(f"Process monitor error: {exc!r}")
 
