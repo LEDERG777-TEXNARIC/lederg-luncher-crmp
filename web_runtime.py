@@ -10,6 +10,7 @@ import time
 import tkinter as tk
 import traceback
 import urllib.parse
+import urllib.request
 import webbrowser
 from pathlib import Path
 from ctypes import wintypes
