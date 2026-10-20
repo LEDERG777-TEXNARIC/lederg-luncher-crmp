@@ -200,9 +200,17 @@ internal static class Program
                 if (parent != null) gameDirectory = parent.FullName;
             }
 
+            // CR:MP's browser/runtime reads the SA-MP installation registry values
+            // to identify the game type and installation. Keep them aligned with the
+            // actual selected installation before starting the native game process.
             using (RegistryKey key = Registry.CurrentUser.CreateSubKey(@"Software\SAMP"))
             {
-                if (key != null) key.SetValue("PlayerName", nickname, RegistryValueKind.String);
+                if (key != null)
+                {
+                    key.SetValue("PlayerName", nickname, RegistryValueKind.String);
+                    key.SetValue("gta_sa_exe", game, RegistryValueKind.String);
+                    key.SetValue("InstallDir", gameDirectory, RegistryValueKind.String);
+                }
             }
 
             // The multiplayer DLL reads the same native SA-MP-style startup flags
@@ -250,8 +258,11 @@ internal static class Program
 
                 try
                 {
-                    uint wait = WaitForSingleObject(remoteThread, 20000);
-                    if (wait == WAIT_TIMEOUT) throw new TimeoutException("Истекло время ожидания загрузки multiplayer DLL.");
+                    uint wait = WaitForSingleObject(remoteThread, 45000);
+                    if (wait == WAIT_TIMEOUT) throw new TimeoutException(
+                        "За 45 секунд CR:MP не завершил инициализацию multiplayer DLL. " +
+                        "Проверь, что архив клиента распакован полностью, gta_sa.exe и DLL взяты из одного комплекта, " +
+                        "а антивирус не блокирует загрузку модулей. Полный путь к DLL и этап запуска записаны в журнал.");
                     if (wait != WAIT_OBJECT_0) throw Win32Error("Ошибка ожидания загрузки multiplayer DLL");
                     uint module;
                     if (!GetExitCodeThread(remoteThread, out module)) throw Win32Error("Не удалось проверить загрузку multiplayer DLL");
