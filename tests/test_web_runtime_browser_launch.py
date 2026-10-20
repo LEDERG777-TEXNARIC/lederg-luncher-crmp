@@ -145,6 +145,25 @@ class DirectLaunchTests(unittest.TestCase):
                 )
                 self.assertEqual(kwargs["startupinfo"].wShowWindow, subprocess.SW_HIDE)
 
+    def test_direct_helper_injects_before_resuming_suspended_game(self):
+        source = Path(__file__).with_name("..").resolve() / "direct_launcher.cs"
+        code = source.read_text(encoding="utf-8")
+        self.assertIn("DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED", code)
+        self.assertIn("uint resumeResult = ResumeThread(pi.hThread);", code)
+        self.assertLess(code.index("GetExitCodeThread(remoteThread, out module)"),
+                        code.index("uint resumeResult = ResumeThread(pi.hThread);"))
+        self.assertNotIn("Thread.Sleep(650)", code)
+
+    def test_nickname_is_persisted_before_direct_launch(self):
+        source = Path(__file__).with_name("..").resolve() / "web_runtime.py"
+        code = source.read_text(encoding="utf-8")
+        self.assertIn('NICK_FILE = DATA_HOME / "nickname.txt"', code)
+        self.assertIn("def set_nickname(self, nickname: str)", code)
+        self.assertIn("NICK_FILE.write_text(clean, encoding=\"utf-8\")", code)
+        html = (Path(__file__).with_name("..").resolve() / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="nickname"', html)
+        self.assertIn('apiCall("set_nickname", nickname)', html)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
