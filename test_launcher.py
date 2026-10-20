@@ -86,8 +86,8 @@ class RangeTestHandler(BaseHTTPRequestHandler):
 
 
 class LauncherTests(unittest.TestCase):
-    def test_default_launch_mode_is_direct_and_browser_free(self):
-        self.assertEqual(DEFAULT_LAUNCH_MODE, "direct")
+    def test_default_launch_mode_uses_the_official_multiplayer_browser(self):
+        self.assertEqual(DEFAULT_LAUNCH_MODE, "browser-ui")
 
     def test_nickname_is_cleaned_and_saved_value_can_be_used(self):
         self.assertEqual(sanitize_nickname("  Илья крутой!!  "), "Илья_крутой")
@@ -95,12 +95,12 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(sanitize_nickname("🔥🔥"), "LEDERG")
         self.assertEqual(sanitize_nickname("A" * 40), "A" * 24)
 
-    def test_release_manifest_cannot_reenable_browser_ui(self):
+    def test_release_manifest_cannot_disable_browser_ui(self):
         payload = {
             "schema": 1,
             "version": "test",
             "archive_url": "client.zip",
-            "launch_mode": "browser-ui",
+            "launch_mode": "direct",
         }
 
         def fake_get(url, timeout):
@@ -108,7 +108,7 @@ class LauncherTests(unittest.TestCase):
             return FakeResponse(payload=payload)
 
         release = fetch_release_manifest(fetcher=fake_get)
-        self.assertEqual(release["launch_mode"], "direct")
+        self.assertEqual(release["launch_mode"], "browser-ui")
 
     def test_public_ip_source_is_the_configurable_github_file(self):
         self.assertEqual(
@@ -178,7 +178,7 @@ class LauncherTests(unittest.TestCase):
     def test_crmp_client_does_not_pass_an_empty_rcon_password(self):
         exe = Path("multiplayer_c/multiplayer_browser_cr.exe")
         self.assertEqual(
-            build_launch_command(exe, "188.127.241.8", 1130, "Player_Name"),
+            build_launch_command(exe, "188.127.241.8", 1130, "Player_Name", "samp-cli"),
             [str(exe), "188.127.241.8:1130", "-n", "Player_Name"],
         )
 
@@ -353,11 +353,12 @@ class LauncherTests(unittest.TestCase):
             dll.write_bytes(b"MZ")
             self.assertEqual(find_injected_multiplayer_dll(root), dll)
 
-    def test_web_launcher_uses_native_crmp_runtime_and_not_the_injected_helper(self):
+    def test_web_launcher_uses_official_multiplayer_browser_and_not_direct_runtime(self):
         source = Path(__file__).with_name("web_runtime.py").read_text(encoding="utf-8")
-        self.assertIn("runtime = find_direct_game_client(root)", source)
-        self.assertIn("command = build_direct_game_command(runtime, host, port, self._nickname)", source)
-        self.assertIn("working_directory = runtime.parent", source)
+        self.assertIn("browser = find_client(root, DEFAULT_CLIENT_EXECUTABLE)", source)
+        self.assertIn("process = connect_via_browser_ui(browser, host, port, self._nickname)", source)
+        self.assertIn("self._refresh_server()", source)
+        self.assertNotIn("command = build_direct_game_command(runtime, host, port, self._nickname)", source)
         self.assertNotIn("build_direct_launcher_command(", source)
         self.assertNotIn("direct_launcher_path()", source)
 
