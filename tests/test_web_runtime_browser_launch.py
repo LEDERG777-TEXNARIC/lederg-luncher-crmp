@@ -81,7 +81,7 @@ class DirectLaunchTests(unittest.TestCase):
             browser_connect.assert_not_called()
             spawn.assert_called_once()
             command = spawn.call_args.args[0]
-            self.assertEqual(command[0], str(helper))
+            self.assertEqual(Path(command[0]).resolve(), helper.resolve())
             self.assertEqual(command[command.index("--game") + 1], str(game))
             self.assertEqual(
                 command[command.index("--dll") + 1],
@@ -130,7 +130,8 @@ class DirectLaunchTests(unittest.TestCase):
                 result = spawn_direct_launcher(["helper.exe", "--host", "127.0.0.1"], root)
 
             self.assertIs(result, process)
-            command, kwargs = popen.call_args
+            command = popen.call_args.args[0]
+            kwargs = popen.call_args.kwargs
             self.assertEqual(command, ["helper.exe", "--host", "127.0.0.1"])
             self.assertEqual(kwargs["cwd"], str(root.resolve()))
             self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
