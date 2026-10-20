@@ -190,7 +190,7 @@ internal static class Program
             if (cleanNick.Length == 0) cleanNick.Append("LEDERG");
             nickname = cleanNick.ToString();
 
-            if (!File.Exists(game)) throw new FileNotFoundException("Не найден gta_sa.exe.", game);
+            if (!File.Exists(game)) throw new FileNotFoundException("Не найден исполняемый модуль CR:MP.", game);
             if (!File.Exists(dll)) throw new FileNotFoundException("Не найдена multiplayer DLL.", dll);
             string gameDirectory = Path.GetDirectoryName(game);
             string dllDirectory = Path.GetDirectoryName(dll);
@@ -213,20 +213,20 @@ internal static class Program
             STARTUPINFO si = new STARTUPINFO();
             si.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFO));
             envPtr = BuildEnvironment(dllDirectory);
-            Log("Starting direct connect to " + host + ":" + port.ToString(CultureInfo.InvariantCulture)
-                + " using " + Path.GetFileName(dll) + ".");
+            Log("Starting CR:MP process image " + game + " and injecting " + dll
+                + "; endpoint=" + host + ":" + port.ToString(CultureInfo.InvariantCulture) + ".");
 
             if (!CreateProcess(game, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false,
-                DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT,
+                DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
                 envPtr, gameDirectory, ref si, out pi))
-                throw Win32Error("Не удалось создать игровой процесс");
+                throw Win32Error("Не удалось создать игровой процесс CR:MP");
 
             processCreated = true;
-            // Let the game's initial loader and window thread run before LoadLibrary.
-            // Some CR:MP builds block inside DLL startup while the primary thread is suspended.
-            Thread.Sleep(650);
-            if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0)
-                throw new InvalidOperationException("Игровой клиент закрылся до загрузки мультиплеера.");
+            // First use the standard SA:MP/CR:MP bootstrap sequence: create the
+            // actual game image suspended, inject the multiplayer module, then
+            // resume the game. Some CR:MP adaptations initialise game-dependent
+            // code in DllMain, so a bounded fallback below resumes the main thread
+            // if the DLL load thread has not returned after the initial wait.
             IntPtr kernel = GetModuleHandleA("kernel32.dll");
             IntPtr loadLibrary = kernel == IntPtr.Zero ? IntPtr.Zero : GetProcAddress(kernel, "LoadLibraryW");
             if (loadLibrary == IntPtr.Zero) throw Win32Error("Не удалось получить адрес LoadLibraryW");
@@ -245,20 +245,63 @@ internal static class Program
 
                 uint remoteThreadId;
                 IntPtr remoteThread = CreateRemoteThread(pi.hProcess, IntPtr.Zero, UIntPtr.Zero,
-                    loadLibrary, remoteBuffer, 0, out remoteThreadId);
-                if (remoteThread == IntPtr.Zero) throw Win32Error("Не удалось загрузить multiplayer DLL");
+                    loadLibrary, remoteBuffer, CREATE_SUSPENDED, out remoteThreadId);
+                if (remoteThread == IntPtr.Zero) throw Win32Error("Не удалось создать поток загрузки multiplayer DLL");
 
                 try
                 {
-                    uint wait = WaitForSingleObject(remoteThread, 20000);
-                    if (wait == WAIT_TIMEOUT) throw new TimeoutException("Истекло время ожидания загрузки multiplayer DLL.");
-                    if (wait != WAIT_OBJECT_0) throw Win32Error("Ошибка ожидания загрузки multiplayer DLL");
+                    if (ResumeThread(remoteThread) == 0xFFFFFFFF)
+                        throw Win32Error("Не удалось запустить поток загрузки multiplayer DLL");
+
+                    uint wait = WaitForSingleObject(remoteThread, 10000);
+                    if (wait == WAIT_TIMEOUT)
+                    {
+                        Log("Multiplayer DLL initialisation is waiting on the game process; "
+                            + "resuming the CR:MP main thread and allowing one bounded retry.");
+                        uint resumeResult = ResumeThread(pi.hThread);
+                        if (resumeResult == 0xFFFFFFFF)
+                        {
+                            Exception resumeError = Win32Error("Не удалось продолжить игровой поток CR:MP");
+                            TerminateProcess(pi.hProcess, 1);
+                            WaitForSingleObject(pi.hProcess, 5000);
+                            throw resumeError;
+                        }
+                        resumed = true;
+                        wait = WaitForSingleObject(remoteThread, 20000);
+                    }
+
+                    if (wait == WAIT_TIMEOUT)
+                    {
+                        Log("Multiplayer DLL load thread timed out after the bounded CR:MP initialisation fallback.");
+                        TerminateProcess(pi.hProcess, 1);
+                        WaitForSingleObject(pi.hProcess, 5000);
+                        throw new TimeoutException(
+                            "CR:MP не завершил инициализацию san_andreas_multiplayer.dll за 30 секунд. "
+                            + "Целевой процесс: " + game + ". Проверь целостность multiplayer_c и журнал direct-launch.log.");
+                    }
+                    if (wait != WAIT_OBJECT_0)
+                    {
+                        Exception waitError = Win32Error("Ошибка ожидания загрузки multiplayer DLL");
+                        TerminateProcess(pi.hProcess, 1);
+                        WaitForSingleObject(pi.hProcess, 5000);
+                        throw waitError;
+                    }
+
                     uint module;
-                    if (!GetExitCodeThread(remoteThread, out module)) throw Win32Error("Не удалось проверить загрузку multiplayer DLL");
+                    if (!GetExitCodeThread(remoteThread, out module))
+                        throw Win32Error("Не удалось проверить загрузку multiplayer DLL");
                     if (module == 0)
                         throw new InvalidOperationException(
                             "Windows не смогла загрузить san_andreas_multiplayer.dll или одну из её зависимостей. "
                             + "Проверь комплект клиента и файлы в multiplayer_c.");
+
+                    if (!resumed)
+                    {
+                        uint resumeResult = ResumeThread(pi.hThread);
+                        if (resumeResult == 0xFFFFFFFF)
+                            throw Win32Error("Модуль CR:MP загружен, но Windows не смогла продолжить игровой поток");
+                        resumed = true;
+                    }
                 }
                 finally { CloseHandle(remoteThread); }
             }
@@ -267,9 +310,8 @@ internal static class Program
                 VirtualFreeEx(pi.hProcess, remoteBuffer, UIntPtr.Zero, MEM_RELEASE);
             }
 
-            resumed = true;
-            Log("Injected multiplayer DLL; game PID=" + pi.dwProcessId.ToString(CultureInfo.InvariantCulture)
-                + ", endpoint=" + host + ":" + port.ToString(CultureInfo.InvariantCulture) + ".");
+            Log("CR:MP multiplayer DLL loaded; game PID=" + pi.dwProcessId.ToString(CultureInfo.InvariantCulture)
+                + ", image=" + game + ", endpoint=" + host + ":" + port.ToString(CultureInfo.InvariantCulture) + ".");
 
             WaitForSingleObject(pi.hProcess, INFINITE);
             uint exitCode;
