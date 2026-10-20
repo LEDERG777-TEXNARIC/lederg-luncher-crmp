@@ -50,7 +50,7 @@ CLIENT_FILES_MANIFEST_URL = ""
 ZIP_SIZE = 0
 SERVER_HOST = "188.127.241.8"
 SERVER_PORT = 1130
-DEFAULT_LAUNCH_MODE = "direct"
+DEFAULT_LAUNCH_MODE = "browser-ui"
 DEFAULT_CLIENT_EXECUTABLE = "multiplayer_c/multiplayer_browser_cr.exe"
 DIRECT_LAUNCHER_NAME = "LEDERG-DirectLaunch.exe"
 
@@ -808,7 +808,7 @@ def fetch_release_manifest(fetcher=None) -> dict:
     manifest_mode = str(payload.get("launch_mode", DEFAULT_LAUNCH_MODE)).strip().lower()
     if manifest_mode not in {"direct", "samp-cli", "browser", "browser-ui"}:
         raise ValueError("Неизвестный launch_mode в манифесте.")
-    # A stale public manifest must not switch the client back to browser-driven launch.
+    # Keep the official CR:MP browser as the reliable launch path; direct DLL injection is unsupported.
     mode = DEFAULT_LAUNCH_MODE
     payload.update({
         "version": version,
