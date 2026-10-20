@@ -216,17 +216,16 @@ internal static class Program
             Log("Starting direct connect to " + host + ":" + port.ToString(CultureInfo.InvariantCulture)
                 + " using " + Path.GetFileName(dll) + ".");
 
+            // Inject before the game's primary thread starts. This is the standard
+            // SA-MP command-line launcher sequence: create suspended, inject the
+            // multiplayer DLL, then resume. Injecting after startup can race the
+            // client's adaptation bootstrap and leave LoadLibrary waiting forever.
             if (!CreateProcess(game, new StringBuilder(command), IntPtr.Zero, IntPtr.Zero, false,
-                DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT,
+                DETACHED_PROCESS | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
                 envPtr, gameDirectory, ref si, out pi))
                 throw Win32Error("Не удалось создать игровой процесс");
 
             processCreated = true;
-            // Let the game's initial loader and window thread run before LoadLibrary.
-            // Some CR:MP builds block inside DLL startup while the primary thread is suspended.
-            Thread.Sleep(650);
-            if (WaitForSingleObject(pi.hProcess, 0) == WAIT_OBJECT_0)
-                throw new InvalidOperationException("Игровой клиент закрылся до загрузки мультиплеера.");
             IntPtr kernel = GetModuleHandleA("kernel32.dll");
             IntPtr loadLibrary = kernel == IntPtr.Zero ? IntPtr.Zero : GetProcAddress(kernel, "LoadLibraryW");
             if (loadLibrary == IntPtr.Zero) throw Win32Error("Не удалось получить адрес LoadLibraryW");
@@ -267,8 +266,12 @@ internal static class Program
                 VirtualFreeEx(pi.hProcess, remoteBuffer, UIntPtr.Zero, MEM_RELEASE);
             }
 
+            uint resumeResult = ResumeThread(pi.hThread);
+            if (resumeResult == 0xFFFFFFFF)
+                throw Win32Error("Не удалось запустить основной поток игры после загрузки multiplayer DLL");
             resumed = true;
-            Log("Injected multiplayer DLL; game PID=" + pi.dwProcessId.ToString(CultureInfo.InvariantCulture)
+            Log("Injected multiplayer DLL and resumed primary thread; game PID="
+                + pi.dwProcessId.ToString(CultureInfo.InvariantCulture)
                 + ", endpoint=" + host + ":" + port.ToString(CultureInfo.InvariantCulture) + ".");
 
             WaitForSingleObject(pi.hProcess, INFINITE);
