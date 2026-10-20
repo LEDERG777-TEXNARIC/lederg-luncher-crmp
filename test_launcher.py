@@ -230,6 +230,15 @@ class LauncherTests(unittest.TestCase):
             with self.assertRaisesRegex(FileNotFoundError, "grand_theft_auto_san_andreas.dll"):
                 build_direct_launcher_command(helper, root, "188.127.241.8", 1130, "LEDERG")
 
+    def test_web_launcher_has_an_editable_persisted_nickname_field(self):
+        source = Path(__file__).with_name("web") / "index.html"
+        html = source.read_text(encoding="utf-8")
+        self.assertIn('id="nickname" name="nickname" type="text"', html)
+        self.assertIn('placeholder="Name_Surname"', html)
+        self.assertIn('await apiCall("set_nickname", nickname);', html)
+        self.assertIn('await apiCall("launch_game", nickname)', html)
+        self.assertIn('event.key === "Enter"', html)
+
     def test_find_client_honors_manifest_relative_executable(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
