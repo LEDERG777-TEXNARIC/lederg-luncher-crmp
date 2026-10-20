@@ -969,21 +969,28 @@ def build_direct_launcher_command(
     port: int,
     nickname: str = "LEDERG",
 ) -> list[str]:
-    """Build an explicit browser-free launch request for the x86 injector helper."""
+    """Build a browser-free launch request for the actual CR:MP process image."""
     host = host.strip()
     if not host or any(ch.isspace() for ch in host) or any(ch in host for ch in '"\\/'):
         raise ValueError("Некорректный адрес сервера.")
     port = int(port)
     if not 1 <= port <= 65535:
         raise ValueError("Порт сервера должен быть от 1 до 65535.")
-    root = Path(game_root)
-    game = root / "gta_sa.exe"
-    multiplayer_dll = find_injected_multiplayer_dll(root)
+    root = Path(game_root).resolve()
+    # CR:MP packages its game executable under this non-.exe name. Injecting
+    # into the vanilla root/gta_sa.exe makes the adaptation DLL stall while
+    # trying to initialise against the wrong game process.
+    game = root / "multiplayer_c" / "grand_theft_auto_san_andreas.dll"
+    multiplayer_dll = root / "multiplayer_c" / "san_andreas_multiplayer.dll"
     if not game.is_file():
-        raise FileNotFoundError(f"Не найден игровой файл: {game}")
-    if multiplayer_dll is None:
         raise FileNotFoundError(
-            "Не найдена multiplayer DLL san_andreas_multiplayer.dll в папке клиента."
+            "Не найден исполняемый модуль CR:MP: "
+            f"{game}. Восстанови файлы папки multiplayer_c."
+        )
+    if not multiplayer_dll.is_file():
+        raise FileNotFoundError(
+            "Не найдена multiplayer DLL san_andreas_multiplayer.dll: "
+            f"{multiplayer_dll}"
         )
     nick = sanitize_nickname(nickname)
     return [

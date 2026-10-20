@@ -81,9 +81,11 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
 .meta-glyph svg{width:28px;height:28px}
 .meta-copy{min-width:0;flex:1}
 .meta-copy label{display:block;margin-bottom:7px;font-size:8px;font-weight:900;letter-spacing:1.8px;color:#777781}
-.meta-copy input{width:100%;min-width:0;padding:0;border:0;outline:0;background:transparent;color:#f5f5f8;font-size:15px;font-weight:850;letter-spacing:.3px}
+.meta-copy input{width:100%;min-width:0;padding:5px 0 7px;border:0;border-bottom:1px solid #383840;border-radius:0;outline:0;background:transparent;color:#f5f5f8;font-size:15px;font-weight:850;letter-spacing:.3px;transition:border-color .2s}
+.meta-copy input::placeholder{color:#686872;font-weight:650}
 .meta-copy input:focus-visible{outline:0}
 .meta-copy:focus-within label{color:#ff7e91}
+.meta-copy:focus-within input{border-bottom-color:var(--red)}
 .folder-block{display:flex;justify-content:flex-end;align-items:center;gap:12px;min-width:0}
 .folder-details{min-width:0;text-align:right}
 .folder-details label{display:block;margin-bottom:6px;color:#777781;font-size:8px;font-weight:900;letter-spacing:1.8px}
@@ -203,7 +205,7 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
           <div class="meta-glyph" aria-hidden="true">
             <svg viewBox="0 0 64 64" fill="none"><path d="M13 11h14v27h24v14H13z" fill="#f6f6f8"/><path d="M42 8h13L32 56H19z" fill="#ff2445"/></svg>
           </div>
-          <div class="meta-copy"><label for="nickname">ИГРОВОЙ НИКНЕЙМ</label><input id="nickname" maxlength="24" autocomplete="nickname" spellcheck="false" value="LEDERG"></div>
+          <div class="meta-copy"><label for="nickname">НИКНЕЙМ ДЛЯ ИГРЫ</label><input id="nickname" name="nickname" type="text" maxlength="24" placeholder="Name_Surname" title="Например, Ivan_Ivanov. До 24 символов." autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" aria-label="Игровой никнейм" value="LEDERG"></div>
         </div>
         <div class="folder-block">
           <div class="folder-details"><label>ПАПКА ИГРЫ</label><span id="installPath">По умолчанию: Games</span></div>
@@ -244,7 +246,7 @@ h1 .second{display:block;margin-top:11px;color:transparent;background:linear-gra
   </main>
 
   <footer class="footer">
-    <div>LEDERG <strong>CR:MP</strong> &nbsp;·&nbsp; BUILD <strong>2.5.3</strong></div>
+    <div>LEDERG <strong>CR:MP</strong> &nbsp;·&nbsp; BUILD <strong>2.5.5</strong></div>
     <div class="footer-right"><span id="clientBadge">CLIENT CHECK</span><button class="footer-link" id="openLog">ЖУРНАЛ</button><button class="footer-link" id="changeFolder">ИЗМЕНИТЬ ПАПКУ</button></div>
   </footer>
 </div>
@@ -420,6 +422,12 @@ $("reinstallButton").addEventListener("click", async () => {
   setBusy(false);
 });
 $("nickname").addEventListener("change", () => apiCall("set_nickname", $("nickname").value));
+$("nickname").addEventListener("keydown", event => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    $("playButton").click();
+  }
+});
 $("openFolder").addEventListener("click", async () => {
   const result = await apiCall("open_game_folder");
   if (result && result.message) toast(result.message);

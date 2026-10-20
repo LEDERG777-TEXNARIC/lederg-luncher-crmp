@@ -186,23 +186,31 @@ class LauncherTests(unittest.TestCase):
         source = Path(__file__).with_name("direct_launcher.cs").read_text(encoding="utf-8")
         self.assertIn('string game = Path.GetFullPath(options["--game"]);', source)
 
+    def test_direct_helper_has_bounded_initialisation_fallback_for_crmp(self):
+        source = Path(__file__).with_name("direct_launcher.cs").read_text(encoding="utf-8")
+        self.assertIn("DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED", source)
+        self.assertIn("WaitForSingleObject(remoteThread, 10000)", source)
+        self.assertIn("WaitForSingleObject(remoteThread, 20000)", source)
+        self.assertIn("ResumeThread(pi.hThread)", source)
+        self.assertIn("san_andreas_multiplayer.dll", source)
+
     def test_direct_helper_passes_native_connect_arguments(self):
         source = Path(__file__).with_name("direct_launcher.cs").read_text(encoding="utf-8")
         self.assertIn('" -c -n " + Quote(nickname)', source)
         self.assertIn('" -h " + host + " -p " + port.ToString(CultureInfo.InvariantCulture)', source)
         self.assertNotIn('Quote(game) + " " + host + ":"', source)
 
-    def test_direct_launch_targets_game_and_multiplayer_dll_not_the_browser(self):
+    def test_direct_launch_targets_the_actual_crmp_process_binary_not_vanilla_gta_sa(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "GTA Criminal Russia"
             multiplayer = root / "multiplayer_c"
             multiplayer.mkdir(parents=True)
-            game = root / "gta_sa.exe"
-            dll = multiplayer / "san_andreas_multiplayer.dll"
-            game.write_bytes(b"MZ")
-            dll.write_bytes(b"MZ")
-            client_game = multiplayer / "grand_theft_auto_san_andreas.dll"
-            client_game.write_bytes(b"MZ")
+            vanilla_game = root / "gta_sa.exe"
+            injected_dll = multiplayer / "san_andreas_multiplayer.dll"
+            vanilla_game.write_bytes(b"MZ")
+            injected_dll.write_bytes(b"MZ")
+            crmp_process = multiplayer / "grand_theft_auto_san_andreas.dll"
+            crmp_process.write_bytes(b"MZ")
             helper = Path(temp) / "LEDERG-DirectLaunch.exe"
 
             command = build_direct_launcher_command(
@@ -210,12 +218,34 @@ class LauncherTests(unittest.TestCase):
             )
 
             self.assertEqual(command[0], str(helper))
-            self.assertEqual(command[command.index("--game") + 1], str(game))
-            self.assertEqual(command[command.index("--dll") + 1], str(dll))
+            self.assertEqual(command[command.index("--game") + 1], str(crmp_process))
+            self.assertNotEqual(command[command.index("--game") + 1], str(vanilla_game))
+            self.assertEqual(command[command.index("--dll") + 1], str(injected_dll))
             self.assertEqual(command[command.index("--host") + 1], "188.127.241.8")
             self.assertEqual(command[command.index("--port") + 1], "1130")
             self.assertEqual(command[command.index("--nickname") + 1], "My_Nick")
             self.assertNotIn(str(multiplayer / "multiplayer_browser_cr.exe"), command)
+
+    def test_direct_launch_requires_the_crmp_process_binary_even_if_vanilla_game_exists(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "GTA Criminal Russia"
+            multiplayer = root / "multiplayer_c"
+            multiplayer.mkdir(parents=True)
+            (root / "gta_sa.exe").write_bytes(b"MZ")
+            (multiplayer / "san_andreas_multiplayer.dll").write_bytes(b"MZ")
+            helper = Path(temp) / "LEDERG-DirectLaunch.exe"
+
+            with self.assertRaisesRegex(FileNotFoundError, "grand_theft_auto_san_andreas.dll"):
+                build_direct_launcher_command(helper, root, "188.127.241.8", 1130, "LEDERG")
+
+    def test_web_launcher_has_an_editable_persisted_nickname_field(self):
+        source = Path(__file__).with_name("web") / "index.html"
+        html = source.read_text(encoding="utf-8")
+        self.assertIn('id="nickname" name="nickname" type="text"', html)
+        self.assertIn('placeholder="Name_Surname"', html)
+        self.assertIn('await apiCall("set_nickname", nickname);', html)
+        self.assertIn('await apiCall("launch_game", nickname)', html)
+        self.assertIn('event.key === "Enter"', html)
 
     def test_find_client_honors_manifest_relative_executable(self):
         with tempfile.TemporaryDirectory() as temp:
