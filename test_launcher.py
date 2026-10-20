@@ -186,6 +186,14 @@ class LauncherTests(unittest.TestCase):
         source = Path(__file__).with_name("direct_launcher.cs").read_text(encoding="utf-8")
         self.assertIn('string game = Path.GetFullPath(options["--game"]);', source)
 
+    def test_direct_helper_has_bounded_initialisation_fallback_for_crmp(self):
+        source = Path(__file__).with_name("direct_launcher.cs").read_text(encoding="utf-8")
+        self.assertIn("DETACHED_PROCESS | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED", source)
+        self.assertIn("WaitForSingleObject(remoteThread, 10000)", source)
+        self.assertIn("WaitForSingleObject(remoteThread, 20000)", source)
+        self.assertIn("ResumeThread(pi.hThread)", source)
+        self.assertIn("san_andreas_multiplayer.dll", source)
+
     def test_direct_helper_passes_native_connect_arguments(self):
         source = Path(__file__).with_name("direct_launcher.cs").read_text(encoding="utf-8")
         self.assertIn('" -c -n " + Quote(nickname)', source)
