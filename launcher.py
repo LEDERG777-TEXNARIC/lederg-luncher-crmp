@@ -50,7 +50,7 @@ CLIENT_FILES_MANIFEST_URL = ""
 ZIP_SIZE = 0
 SERVER_HOST = "188.127.241.8"
 SERVER_PORT = 1130
-DEFAULT_LAUNCH_MODE = "direct"
+DEFAULT_LAUNCH_MODE = "browser-ui"
 DEFAULT_CLIENT_EXECUTABLE = "multiplayer_c/multiplayer_browser_cr.exe"
 DIRECT_LAUNCHER_NAME = "LEDERG-DirectLaunch.exe"
 
@@ -808,8 +808,8 @@ def fetch_release_manifest(fetcher=None) -> dict:
     manifest_mode = str(payload.get("launch_mode", DEFAULT_LAUNCH_MODE)).strip().lower()
     if manifest_mode not in {"direct", "samp-cli", "browser", "browser-ui"}:
         raise ValueError("Неизвестный launch_mode в манифесте.")
-    # This launcher build uses the tested command-line path. A stale public
-    # manifest must not switch it back to the graphical server browser.
+    # Always use the actual multiplayer browser bundled in multiplayer_c.
+    # A stale public manifest must not switch this build to direct runtime launch.
     mode = DEFAULT_LAUNCH_MODE
     payload.update({
         "version": version,
@@ -1059,19 +1059,36 @@ def write_launcher_log(message: str) -> None:
         pass
 
 
-def connect_via_browser_ui(executable: Path, host: str, port: int, nickname: str = "LEDERG") -> subprocess.Popen:
-    """Launch the legacy CR:MP browser and drive its native server/connect dialogs."""
+def connect_via_browser_ui(
+    executable: Path, host: str, port: int, nickname: str = "LEDERG"
+) -> subprocess.Popen:
+    """Open the official CR:MP browser and connect through its server UI."""
+    endpoint_host, endpoint_port = parse_server_address(
+        f"{host}:{int(port)}" if not str(host).startswith("[") else f"{host}:{int(port)}"
+    )
+    if executable.name.casefold() != "multiplayer_browser_cr.exe":
+        raise ValueError(
+            "Для запуска через браузер нужен multiplayer_c/multiplayer_browser_cr.exe."
+        )
+    game_root = game_root_for(executable)
     if os.name != "nt":
-        return subprocess.Popen([str(executable)], cwd=str(game_root_for(executable)))
+        # Keeps discovery/unit tests portable; real UI automation is Windows-only.
+        return subprocess.Popen([str(executable)], cwd=str(game_root))
+
     user32 = ctypes.windll.user32
     EnumProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
 
     class RECT(ctypes.Structure):
-        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                    ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+        _fields_ = [
+            ("left", ctypes.c_long),
+            ("top", ctypes.c_long),
+            ("right", ctypes.c_long),
+            ("bottom", ctypes.c_long),
+        ]
 
     def windows(pid: int):
         found = []
+
         def callback(hwnd, _):
             process_id = ctypes.c_ulong()
             user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
@@ -1083,6 +1100,7 @@ def connect_via_browser_ui(executable: Path, host: str, port: int, nickname: str
                 user32.GetWindowRect(hwnd, ctypes.byref(rect))
                 found.append((hwnd, buf.value, bool(user32.IsWindowVisible(hwnd)), rect))
             return True
+
         user32.EnumWindows(EnumProc(callback), 0)
         return found
 
@@ -1099,16 +1117,21 @@ def connect_via_browser_ui(executable: Path, host: str, port: int, nickname: str
         user32.GetWindowRect(hwnd, ctypes.byref(rect))
         click(rect.left + x, rect.top + y, double)
 
-    def find_window(pid, needle, visible=True):
+    def find_window(pid: int, needles, visible=True):
+        if isinstance(needles, str):
+            needles = (needles,)
+        needles = tuple(str(value).casefold() for value in needles)
         for hwnd, title, shown, rect in windows(pid):
-            if needle.lower() in title.lower() and (visible is None or shown == visible):
+            if any(needle in title.casefold() for needle in needles) and (
+                visible is None or shown == visible
+            ):
                 return hwnd, title, rect
         return None
 
-    def wait_window(pid, needle, timeout=4):
+    def wait_window(pid: int, needles, timeout=4):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            item = find_window(pid, needle, True)
+            item = find_window(pid, needles, True)
             if item:
                 return item
             time.sleep(.15)
@@ -1116,63 +1139,168 @@ def connect_via_browser_ui(executable: Path, host: str, port: int, nickname: str
 
     def type_text(value):
         KEYEVENTF_UNICODE, KEYEVENTF_KEYUP = 0x0004, 0x0002
+
         class KEYBDINPUT(ctypes.Structure):
-            _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort),
-                        ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong),
-                        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
+            _fields_ = [
+                ("wVk", ctypes.c_ushort),
+                ("wScan", ctypes.c_ushort),
+                ("dwFlags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong),
+                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+            ]
+
         class INPUTUNION(ctypes.Union):
             _fields_ = [("ki", KEYBDINPUT)]
+
         class INPUT(ctypes.Structure):
             _fields_ = [("type", ctypes.c_ulong), ("u", INPUTUNION)]
+
         for char in value:
-            event = INPUT(1, INPUTUNION(KEYBDINPUT(0, ord(char), KEYEVENTF_UNICODE, 0, None)))
+            event = INPUT(
+                1,
+                INPUTUNION(KEYBDINPUT(0, ord(char), KEYEVENTF_UNICODE, 0, None)),
+            )
             user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(INPUT))
             event.u.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
             user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(INPUT))
 
-    def press_enter():
-        user32.keybd_event(0x0D, 0, 0, 0)
+    def press_key(key):
+        user32.keybd_event(key, 0, 0, 0)
         time.sleep(.04)
-        user32.keybd_event(0x0D, 0, 2, 0)
+        user32.keybd_event(key, 0, 2, 0)
 
-    process = subprocess.Popen([str(executable)], cwd=str(game_root_for(executable)),
-                               stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, close_fds=True)
-    browser = wait_window(process.pid, "Criminal Russia Multiplayer", 15)
-    if not browser:
-        raise RuntimeError("CR:MP browser window did not appear.")
-    hwnd = browser[0]
-    user32.SetForegroundWindow(hwnd)
-    time.sleep(.5)
+    def press_enter():
+        press_key(0x0D)
 
-    # Toolbar: Add Server; the edit field in the native dialog is focused by default.
-    click_relative(hwnd, 49, 64)
-    add_dialog = wait_window(process.pid, "Добавление сервера", 3)
-    if add_dialog:
+    def replace_focused_text(value):
+        # Ctrl+A avoids appending to an old address or nickname left in the edit box.
+        user32.keybd_event(0x11, 0, 0, 0)
+        user32.keybd_event(0x41, 0, 0, 0)
+        time.sleep(.04)
+        user32.keybd_event(0x41, 0, 2, 0)
+        user32.keybd_event(0x11, 0, 2, 0)
+        time.sleep(.05)
+        type_text(value)
+
+    process = subprocess.Popen(
+        [str(executable)],
+        cwd=str(game_root),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    write_launcher_log(
+        f"CR:MP browser launch requested: executable={executable}; cwd={game_root}; "
+        f"endpoint={endpoint_host}:{endpoint_port}; nickname={nickname}"
+    )
+    try:
+        browser = wait_window(
+            process.pid,
+            ("Criminal Russia Multiplayer", "Criminal Russia MP"),
+            15,
+        )
+        if not browser:
+            raise RuntimeError(
+                "Запустил multiplayer_browser_cr.exe, но окно браузера CR:MP не появилось. "
+                "Проверь файлы в multiplayer_c и открой «ЖУРНАЛ»."
+            )
+        hwnd = browser[0]
+        user32.SetForegroundWindow(hwnd)
+        time.sleep(.5)
+
+        # The client's toolbar contains Add Server. Dialog titles differ between languages.
+        click_relative(hwnd, 49, 64)
+        add_dialog = wait_window(
+            process.pid,
+            ("Добавление сервера", "Добавить сервер", "Add Server", "Add a Server"),
+            4,
+        )
+        if not add_dialog:
+            raise RuntimeError(
+                "Браузер открыт, но окно добавления сервера не найдено. "
+                "Если интерфейс клиента отличается, открой «ЖУРНАЛ» для диагностики."
+            )
         user32.SetForegroundWindow(add_dialog[0])
-        type_text(f"{host}:{port}")
+        replace_focused_text(f"{endpoint_host}:{endpoint_port}")
         press_enter()
-        time.sleep(2)
+        time.sleep(1.5)
 
-    # Select the first row and open its properties, then click Connect.
-    click_relative(hwnd, 180, 106, double=True)
-    props = wait_window(process.pid, "Свойства сервера", 3)
-    if props:
+        # This client archive starts with an empty server list. The just-added endpoint
+        # is therefore the first row; double-click it to open its properties.
+        click_relative(hwnd, 180, 106, double=True)
+        props = wait_window(
+            process.pid,
+            ("Свойства сервера", "Server Properties", "Server properties"),
+            4,
+        )
+        if not props:
+            raise RuntimeError(
+                f"Адрес {endpoint_host}:{endpoint_port} добавлен в браузер, но окно "
+                "свойств сервера не открылось. Проверь окно CR:MP и журнал лаунчера."
+            )
         user32.SetForegroundWindow(props[0])
         click_relative(props[0], 62, 205)
-        nick_dialog = wait_window(process.pid, "Кто вы", 2)
+
+        nick_dialog = wait_window(
+            process.pid,
+            ("Кто вы", "Who are you", "Enter your nickname", "Nickname"),
+            3,
+        )
         if nick_dialog:
             user32.SetForegroundWindow(nick_dialog[0])
             click_relative(nick_dialog[0], 140, 67)
-            type_text(re.sub(r"[^A-Za-z0-9_]", "", nickname)[:24] or "LEDERG")
+            clean_nickname = re.sub(r"[^A-Za-z0-9_]", "", nickname)[:24] or "LEDERG"
+            replace_focused_text(clean_nickname)
             press_enter()
-            time.sleep(1)
-            # Some client builds require a second click after the nickname is accepted.
-            props_again = wait_window(process.pid, "Свойства сервера", 1)
+            time.sleep(.8)
+            # On some client builds the nickname dialog returns to server properties;
+            # press Connect a second time to finish the handoff.
+            props_again = wait_window(
+                process.pid,
+                ("Свойства сервера", "Server Properties", "Server properties"),
+                1.5,
+            )
             if props_again:
                 user32.SetForegroundWindow(props_again[0])
                 click_relative(props_again[0], 62, 205)
-    return process
+        else:
+            # A saved nickname may skip the prompt, but a still-open properties window
+            # indicates Connect did not proceed.
+            props_again = wait_window(
+                process.pid,
+                ("Свойства сервера", "Server Properties", "Server properties"),
+                1,
+            )
+            if props_again:
+                raise RuntimeError(
+                    "В окне свойств сервера не открылся экран ника/подключения. "
+                    "Проверь раскладку окон клиента и журнал лаунчера."
+                )
+
+        write_launcher_log(
+            f"CR:MP browser UI connection flow submitted for {endpoint_host}:{endpoint_port}; "
+            f"pid={process.pid}"
+        )
+        return process
+    except Exception as exc:
+        write_launcher_log(
+            f"CR:MP browser UI connection failed: endpoint={endpoint_host}:{endpoint_port}; "
+            f"pid={process.pid}; error={exc!r}"
+        )
+        # Avoid leaving an untracked browser hidden behind the launcher when the UI
+        # flow could not reach the server connection stage.
+        if process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=3)
+            except Exception:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+        raise
+
 
 
 def safe_extract_zip(
