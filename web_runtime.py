@@ -1185,72 +1185,61 @@ class LauncherApi:
 
         try:
             host, port = parse_server_address(endpoint)
-            helper = direct_launcher_path().resolve()
-            if not helper.is_file():
+            browser = find_client(root, DEFAULT_CLIENT_EXECUTABLE)
+            if browser is None or browser.name.casefold() != "multiplayer_browser_cr.exe":
                 raise FileNotFoundError(
-                    "Не найден встроенный помощник LEDERG-DirectLaunch.exe. "
-                    "Обнови или переустанови сам лаунчер."
+                    "Не найден multiplayer_c/multiplayer_browser_cr.exe. "
+                    "Нажми «Переустановить / восстановить клиент» и проверь архив."
                 )
-
-            command = build_direct_launcher_command(
-                helper, root, host, port, self._nickname
-            )
-            game = Path(command[command.index("--game") + 1])
-            multiplayer_dll = Path(command[command.index("--dll") + 1])
-            try:
-                helper_stat = helper.stat()
-                helper_details = f"size={helper_stat.st_size}; mtime={helper_stat.st_mtime_ns}"
-            except OSError as stat_error:
-                helper_details = f"stat_error={stat_error!r}"
-
+            clean_nickname = sanitize_nickname(self._nickname)
             write_launcher_log(
-                f"Direct-connect launch requested: helper={helper}; {helper_details}; "
-                f"game={game}; dll={multiplayer_dll}; cwd={root}; "
-                f"endpoint={host}:{port}; nickname={self._nickname}"
+                f"Starting official CR:MP browser UI; executable={browser}; "
+                f"cwd={game_root_for(browser)}; endpoint={host}:{port}; "
+                f"nickname={clean_nickname}; direct_dll_injection=disabled"
             )
-            launch_started_at = time.time()
-            process = spawn_direct_launcher(command, root)
+            process = connect_via_browser_ui(browser, host, port, clean_nickname)
             if process is None:
-                raise RuntimeError("Помощник прямого подключения не вернул дескриптор процесса.")
-
+                raise RuntimeError("Браузер CR:MP не вернул дескриптор процесса.")
             with self._lock:
                 self._process = process
                 self._status = (
-                    f"Запускаю игру без браузера. Сервер: {host}:{port}. PID помощника {process.pid}."
+                    f"Запущен официальный браузер CR:MP; подключение к {host}:{port}; "
+                    f"ник {clean_nickname}."
                 )
                 self._phase = "ready"
                 self._error = ""
                 self._progress = 100.0
-                self._progress_label = "ПРЯМОЕ ПОДКЛЮЧЕНИЕ · CMD СКРЫТ"
+                self._progress_label = "CR:MP · ОФИЦИАЛЬНЫЙ КЛИЕНТ"
             write_launcher_log(
-                f"Direct-connect helper started: pid={process.pid}; "
-                f"endpoint={host}:{port}; command={command!r}; browser_not_started=true"
+                f"Official browser UI flow submitted: pid={process.pid}; "
+                f"endpoint={host}:{port}; nickname={clean_nickname}; "
+                "direct_helper_not_used=true"
             )
             self._start_xpanel_hotkey(process, root)
             threading.Thread(
                 target=self._monitor_process,
-                args=(process, launch_started_at),
+                args=(process, time.time()),
                 daemon=True,
-                name="LEDERG-direct-game-process-monitor",
+                name="LEDERG-crmp-process-monitor",
             ).start()
             return {
                 "ok": True,
                 "message": (
-                    f"Запускаю GTA: San Andreas напрямую, без окна браузера и консоли. "
-                    f"Адрес сервера: {host}:{port}."
+                    f"Запускаю официальный клиент CR:MP. Сервер: {host}:{port}. "
+                    f"Ник: {clean_nickname}."
                 ),
             }
         except Exception as exc:
             write_launcher_log(
-                f"ERROR launching direct CR:MP session: {traceback.format_exc()}"
+                f"ERROR launching official CR:MP browser flow: {traceback.format_exc()}"
             )
             with self._lock:
                 self._phase = "error"
                 self._error = str(exc)
-                self._status = "Ошибка прямого запуска CR:MP."
+                self._status = "Ошибка запуска официального клиента CR:MP."
             return {
                 "ok": False,
-                "message": f"Не удалось напрямую запустить/подключить CR:MP: {exc}",
+                "message": f"Не удалось запустить CR:MP: {exc}",
             }
 
     def _start_xpanel_hotkey(self, process: subprocess.Popen, root: Path) -> None:
