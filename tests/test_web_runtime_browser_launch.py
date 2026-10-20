@@ -61,7 +61,7 @@ class BrowserLaunchTests(unittest.TestCase):
                 result = LauncherApi.launch_game(api, "LEDERG")
 
             self.assertTrue(result["ok"], result)
-            connect.assert_called_once_with(browser, "188.127.241.8", 1130, "LEDERG")
+            connect.assert_called_once_with(browser.resolve(), "188.127.241.8", 1130, "LEDERG")
             self.assertIs(api._process, process)
             self.assertIn("188.127.241.8:1130", api._status)
 
