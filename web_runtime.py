@@ -1138,7 +1138,7 @@ class LauncherApi:
             return {"ok": False, "message": f"Не удалось открыть папку: {exc}"}
 
     def launch_game(self, nickname: str) -> dict:
-        """Launch the bundled multiplayer browser and connect using the public IP config."""
+        """Launch the CR:MP game process via the bundled helper and public IP config."""
         self.set_nickname(nickname)
         with self._lock:
             if self._busy:
@@ -1150,7 +1150,7 @@ class LauncherApi:
                 "message": "Не найдена папка игры. Выбери папку или скачай клиент.",
             }
 
-        # Refresh the public server file immediately before starting the browser,
+        # Refresh the public server file immediately before launching the game,
         # not only in the background poller. Offline fallback uses the last good cache.
         self._refresh_server()
         with self._lock:
@@ -1236,7 +1236,7 @@ class LauncherApi:
             return {
                 "ok": True,
                 "message": (
-                    f"Запускаю GTA: San Andreas напрямую, без окна браузера и консоли. "
+                    f"Запускаю CR:MP напрямую, без окна браузера и консоли. "
                     f"Адрес сервера: {host}:{port}."
                 ),
             }
