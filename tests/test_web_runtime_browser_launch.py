@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import tempfile
 import threading
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from web_runtime import LauncherApi
+from web_runtime import LauncherApi, spawn_direct_launcher
 
 
-class BrowserLaunchTests(unittest.TestCase):
+class DirectLaunchTests(unittest.TestCase):
     @staticmethod
     def make_api(root: Path) -> LauncherApi:
         api = object.__new__(LauncherApi)
@@ -32,17 +34,31 @@ class BrowserLaunchTests(unittest.TestCase):
         api._repair_failure = {}
         return api
 
-    def test_play_launches_the_browser_from_multiplayer_c_with_server_ip(self):
+    @staticmethod
+    def create_client(root: Path) -> tuple[Path, Path]:
+        multiplayer = root / "multiplayer_c"
+        multiplayer.mkdir(parents=True)
+        game = root / "gta_sa.exe"
+        game.write_bytes(b"MZ")
+        runtime = multiplayer / "grand_theft_auto_san_andreas.dll"
+        runtime.write_bytes(b"MZ")
+        (multiplayer / "san_andreas_multiplayer.dll").write_bytes(b"MZ")
+        return game, runtime
+
+    def test_play_launches_hidden_direct_helper_and_never_opens_browser(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp) / "GTA Criminal Russia"
+            temp_root = Path(temp)
+            root = temp_root / "GTA Criminal Russia"
+            root.mkdir()
+            game, runtime = self.create_client(root)
             browser = root / "multiplayer_c" / "multiplayer_browser_cr.exe"
-            browser.parent.mkdir(parents=True)
             browser.write_bytes(b"MZ")
-            (root / "gta_sa.exe").write_bytes(b"MZ")
+            helper = temp_root / "LEDERG-DirectLaunch.exe"
+            helper.write_bytes(b"MZ")
             api = self.make_api(root)
             process = Mock()
             process.pid = 1234
-            process.args = [str(browser)]
+            process.args = ["LEDERG-DirectLaunch.exe", "--host", "188.127.241.8"]
             process.poll.return_value = None
 
             with (
@@ -52,8 +68,9 @@ class BrowserLaunchTests(unittest.TestCase):
                     "healthy": True, "summary": "ok", "issues": [], "warnings": [],
                     "integrity_mode": "verified", "checked_files": 20,
                 }),
-                patch("web_runtime.find_client", return_value=browser),
-                patch("web_runtime.connect_via_browser_ui", return_value=process) as connect,
+                patch("web_runtime.direct_launcher_path", return_value=helper),
+                patch("web_runtime.spawn_direct_launcher", return_value=process) as spawn,
+                patch("web_runtime.connect_via_browser_ui") as browser_connect,
                 patch.object(LauncherApi, "_start_xpanel_hotkey"),
                 patch("web_runtime.threading.Thread") as thread,
             ):
@@ -61,14 +78,29 @@ class BrowserLaunchTests(unittest.TestCase):
                 result = LauncherApi.launch_game(api, "LEDERG")
 
             self.assertTrue(result["ok"], result)
-            connect.assert_called_once_with(browser.resolve(), "188.127.241.8", 1130, "LEDERG")
+            browser_connect.assert_not_called()
+            spawn.assert_called_once()
+            command = spawn.call_args.args[0]
+            self.assertEqual(command[0], str(helper))
+            self.assertEqual(command[command.index("--game") + 1], str(game))
+            self.assertEqual(
+                command[command.index("--dll") + 1],
+                str(root / "multiplayer_c" / "san_andreas_multiplayer.dll"),
+            )
+            self.assertEqual(command[command.index("--host") + 1], "188.127.241.8")
+            self.assertEqual(command[command.index("--port") + 1], "1130")
+            self.assertEqual(command[command.index("--nickname") + 1], "LEDERG")
+            self.assertNotIn(str(browser), command)
             self.assertIs(api._process, process)
             self.assertIn("188.127.241.8:1130", api._status)
 
-    def test_play_reports_missing_multiplayer_browser_instead_of_running_another_exe(self):
+    def test_play_reports_missing_direct_helper_without_opening_browser(self):
         with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp) / "GTA Criminal Russia"
+            temp_root = Path(temp)
+            root = temp_root / "GTA Criminal Russia"
             root.mkdir()
+            self.create_client(root)
+            helper = temp_root / "missing" / "LEDERG-DirectLaunch.exe"
             api = self.make_api(root)
 
             with (
@@ -78,14 +110,39 @@ class BrowserLaunchTests(unittest.TestCase):
                     "healthy": True, "summary": "ok", "issues": [], "warnings": [],
                     "integrity_mode": "verified", "checked_files": 20,
                 }),
-                patch("web_runtime.find_client", return_value=None),
-                patch("web_runtime.connect_via_browser_ui") as connect,
+                patch("web_runtime.direct_launcher_path", return_value=helper),
+                patch("web_runtime.spawn_direct_launcher") as spawn,
+                patch("web_runtime.connect_via_browser_ui") as browser_connect,
             ):
                 result = LauncherApi.launch_game(api, "LEDERG")
 
             self.assertFalse(result["ok"])
-            self.assertIn("multiplayer_browser_cr.exe", result["message"])
-            connect.assert_not_called()
+            self.assertIn("LEDERG-DirectLaunch.exe", result["message"])
+            spawn.assert_not_called()
+            browser_connect.assert_not_called()
+
+    def test_spawn_direct_launcher_suppresses_console_and_detaches_stdio(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            process = Mock()
+
+            with patch("web_runtime.subprocess.Popen", return_value=process) as popen:
+                result = spawn_direct_launcher(["helper.exe", "--host", "127.0.0.1"], root)
+
+            self.assertIs(result, process)
+            command, kwargs = popen.call_args
+            self.assertEqual(command, ["helper.exe", "--host", "127.0.0.1"])
+            self.assertEqual(kwargs["cwd"], str(root.resolve()))
+            self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+            self.assertIs(kwargs["stdout"], subprocess.DEVNULL)
+            self.assertIs(kwargs["stderr"], subprocess.DEVNULL)
+            self.assertTrue(kwargs["close_fds"])
+            if os.name == "nt":
+                self.assertEqual(kwargs["creationflags"], subprocess.CREATE_NO_WINDOW)
+                self.assertTrue(
+                    kwargs["startupinfo"].dwFlags & subprocess.STARTF_USESHOWWINDOW
+                )
+                self.assertEqual(kwargs["startupinfo"].wShowWindow, subprocess.SW_HIDE)
 
 
 if __name__ == "__main__":
