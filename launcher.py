@@ -1063,9 +1063,10 @@ def connect_via_browser_ui(
     executable: Path, host: str, port: int, nickname: str = "LEDERG"
 ) -> subprocess.Popen:
     """Open the official CR:MP browser and connect through its server UI."""
-    endpoint_host, endpoint_port = parse_server_address(
-        f"{host}:{int(port)}" if not str(host).startswith("[") else f"{host}:{int(port)}"
-    )
+    host_text = str(host or "").strip()
+    if ":" in host_text and not host_text.startswith("["):
+        host_text = f"[{host_text}]"
+    endpoint_host, endpoint_port = parse_server_address(f"{host_text}:{int(port)}")
     if executable.name.casefold() != "multiplayer_browser_cr.exe":
         raise ValueError(
             "Для запуска через браузер нужен multiplayer_c/multiplayer_browser_cr.exe."
