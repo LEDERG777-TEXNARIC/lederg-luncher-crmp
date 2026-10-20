@@ -31,6 +31,7 @@ from launcher import (
     CLIENT_INTEGRITY_FILENAME,
     ENB_DISABLED_BACKUP,
     build_direct_game_command,
+    connect_via_browser_ui,
     download_archive,
     download_client_folder,
     fetch_release_manifest,
@@ -1135,15 +1136,24 @@ class LauncherApi:
             return {"ok": False, "message": f"Не удалось открыть папку: {exc}"}
 
     def launch_game(self, nickname: str) -> dict:
-        """Launch the CR:MP runtime itself; do not inject an adaptation DLL into vanilla GTA:SA."""
+        """Launch the bundled multiplayer browser and connect using the public IP config."""
         self.set_nickname(nickname)
         with self._lock:
             if self._busy:
                 return {"ok": False, "message": "Дождись завершения текущей операции."}
             root = self._game_root
-            endpoint = self._endpoint
         if not root:
-            return {"ok": False, "message": "Не найдена папка игры. Выбери папку или скачай клиент."}
+            return {
+                "ok": False,
+                "message": "Не найдена папка игры. Выбери папку или скачай клиент.",
+            }
+
+        # Refresh the public server file immediately before starting the browser,
+        # not only in the background poller. Offline fallback uses the last good cache.
+        self._refresh_server()
+        with self._lock:
+            endpoint = self._endpoint
+
         health = inspect_client_installation(
             root,
             progress_callback=lambda done, total, name: self._set_progress(
@@ -1170,64 +1180,81 @@ class LauncherApi:
                     "используй «Переустановить» или открой журнал."
                 ),
             }
-        runtime = find_direct_game_client(root)
-        if not (root / "gta_sa.exe").is_file() or not runtime:
-            return {
-                "ok": False,
-                "message": (
-                    "Не найден CR:MP runtime grand_theft_auto_san_andreas.dll. "
-                    "Нажми «Скачать / восстановить файлы» для проверки клиента."
-                ),
-            }
-        try:
-            host, port = parse_server_address(endpoint)
-            command = build_direct_game_command(runtime, host, port, self._nickname)
-            # The native CR:MP browser lives in multiplayer_c and starts this
-            # client runtime directly. Launching gta_sa.exe and injecting
-            # san_andreas_multiplayer.dll produces the wrong adaptation context.
-            working_directory = runtime.parent
-            try:
-                runtime_stat = runtime.stat()
-                runtime_details = (
-                    f"size={runtime_stat.st_size}; modified={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(runtime_stat.st_mtime))}"
-                )
-            except OSError as stat_error:
-                runtime_details = f"stat_error={stat_error!r}"
-            write_launcher_log(
-                f"Native CR:MP runtime launch: executable={runtime}; {runtime_details}; "
-                f"cwd={working_directory}; endpoint={host}:{port}; nickname={self._nickname}; "
-                f"command={subprocess.list2cmdline(command)!r}"
-            )
-            launch_started_at = time.time()
-            process = subprocess.Popen(
-                command,
-                cwd=str(working_directory),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
+
+        browser = find_client(root, DEFAULT_CLIENT_EXECUTABLE)
+        if not browser or browser.name.casefold() != "multiplayer_browser_cr.exe":
+            message = (
+                "Не найден обязательный браузер CR:MP: "
+                "multiplayer_c/multiplayer_browser_cr.exe. "
+                "Восстанови клиент из официального ZIP."
             )
             with self._lock:
+                self._phase = "error"
+                self._error = message
+                self._status = message
+            write_launcher_log(f"Cannot launch CR:MP browser: root={root}; candidate={browser!r}")
+            return {"ok": False, "message": message}
+
+        try:
+            host, port = parse_server_address(endpoint)
+            browser = browser.resolve()
+            working_directory = game_root_for(browser)
+            try:
+                browser_stat = browser.stat()
+                browser_details = (
+                    f"size={browser_stat.st_size}; "
+                    f"modified={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(browser_stat.st_mtime))}"
+                )
+            except OSError as stat_error:
+                browser_details = f"stat_error={stat_error!r}"
+            write_launcher_log(
+                f"Official CR:MP browser launch: executable={browser}; {browser_details}; "
+                f"cwd={working_directory}; endpoint={host}:{port}; nickname={self._nickname}"
+            )
+
+            launch_started_at = time.time()
+            process = connect_via_browser_ui(browser, host, port, self._nickname)
+            if process is None:
+                raise RuntimeError("Браузер CR:MP не вернул дескриптор процесса.")
+            with self._lock:
                 self._process = process
-                self._status = f"CR:MP runtime запущен. PID {process.pid}; сервер {host}:{port}."
+                self._status = (
+                    f"Браузер CR:MP запущен; запрос подключения отправлен на {host}:{port}. "
+                    f"PID {process.pid}."
+                )
                 self._phase = "ready"
                 self._error = ""
-            write_launcher_log(f"Native CR:MP runtime process started: pid={process.pid}")
+                self._progress = 100.0
+                self._progress_label = "БРАУЗЕР CR:MP ЗАПУЩЕН"
+            write_launcher_log(
+                f"Official CR:MP browser process started: pid={process.pid}; "
+                f"endpoint={host}:{port}; command={process.args!r}"
+            )
             self._start_xpanel_hotkey(process, root)
             threading.Thread(
                 target=self._monitor_process,
                 args=(process, launch_started_at),
                 daemon=True,
-                name="LEDERG-game-process-monitor",
+                name="LEDERG-browser-process-monitor",
             ).start()
-            return {"ok": True, "message": f"Запускаю CR:MP и подключаю к {host}:{port}."}
+            return {
+                "ok": True,
+                "message": (
+                    f"Запускаю multiplayer_browser_cr.exe и передаю подключение к {host}:{port}."
+                ),
+            }
         except Exception as exc:
-            write_launcher_log(f"ERROR launching native CR:MP runtime: {traceback.format_exc()}")
+            write_launcher_log(
+                f"ERROR launching through CR:MP browser: {traceback.format_exc()}"
+            )
             with self._lock:
                 self._phase = "error"
                 self._error = str(exc)
-                self._status = "Ошибка запуска CR:MP."
-            return {"ok": False, "message": f"Не удалось запустить CR:MP: {exc}"}
+                self._status = "Ошибка запуска браузера CR:MP."
+            return {
+                "ok": False,
+                "message": f"Не удалось запустить/подключить через браузер CR:MP: {exc}",
+            }
 
     def _start_xpanel_hotkey(self, process: subprocess.Popen, root: Path) -> None:
         """Start an X-key watcher tied to this game process; never global-type elsewhere."""
