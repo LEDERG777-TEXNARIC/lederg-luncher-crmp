@@ -31,6 +31,10 @@ class LauncherSourcePolicyTests(unittest.TestCase):
         self.assertEqual(manifest["archive_size"], 0)
         self.assertEqual(manifest["sha256"], "")
 
+    def test_public_ip_file_is_currently_the_launch_endpoint_source(self):
+        self.assertEqual(launcher.SERVER_IP_URL, "https://raw.githubusercontent.com/LEDERG777-TEXNARIC/lederg-ip-crmp/main/ip")
+        self.assertEqual(launcher.parse_server_address("188.127.241.8:1130"), ("188.127.241.8", 1130))
+
     def test_server_endpoint_is_fetched_from_the_public_ip_config(self):
         captured = {}
         response = SimpleNamespace(
