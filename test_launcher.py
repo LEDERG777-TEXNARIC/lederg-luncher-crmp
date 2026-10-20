@@ -86,8 +86,8 @@ class RangeTestHandler(BaseHTTPRequestHandler):
 
 
 class LauncherTests(unittest.TestCase):
-    def test_default_launch_mode_uses_the_official_multiplayer_browser(self):
-        self.assertEqual(DEFAULT_LAUNCH_MODE, "browser-ui")
+    def test_default_launch_mode_uses_native_direct_connect(self):
+        self.assertEqual(DEFAULT_LAUNCH_MODE, "direct")
 
     def test_nickname_is_cleaned_and_saved_value_can_be_used(self):
         self.assertEqual(sanitize_nickname("  Илья крутой!!  "), "Илья_крутой")
@@ -95,12 +95,12 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(sanitize_nickname("🔥🔥"), "LEDERG")
         self.assertEqual(sanitize_nickname("A" * 40), "A" * 24)
 
-    def test_release_manifest_cannot_disable_browser_ui(self):
+    def test_release_manifest_cannot_switch_native_launch_back_to_browser_ui(self):
         payload = {
             "schema": 1,
             "version": "test",
             "archive_url": "client.zip",
-            "launch_mode": "direct",
+            "launch_mode": "browser-ui",
         }
 
         def fake_get(url, timeout):
@@ -108,7 +108,7 @@ class LauncherTests(unittest.TestCase):
             return FakeResponse(payload=payload)
 
         release = fetch_release_manifest(fetcher=fake_get)
-        self.assertEqual(release["launch_mode"], "browser-ui")
+        self.assertEqual(release["launch_mode"], "direct")
 
     def test_public_ip_source_is_the_configurable_github_file(self):
         self.assertEqual(
@@ -353,14 +353,14 @@ class LauncherTests(unittest.TestCase):
             dll.write_bytes(b"MZ")
             self.assertEqual(find_injected_multiplayer_dll(root), dll)
 
-    def test_web_launcher_uses_official_multiplayer_browser_and_not_direct_runtime(self):
+    def test_web_launcher_uses_hidden_direct_helper_and_never_launches_browser(self):
         source = Path(__file__).with_name("web_runtime.py").read_text(encoding="utf-8")
-        self.assertIn("browser = find_client(root, DEFAULT_CLIENT_EXECUTABLE)", source)
-        self.assertIn("process = connect_via_browser_ui(browser, host, port, self._nickname)", source)
+        self.assertIn("helper = direct_launcher_path().resolve()", source)
+        self.assertIn("command = build_direct_launcher_command(", source)
+        self.assertIn("process = spawn_direct_launcher(command, root)", source)
         self.assertIn("self._refresh_server()", source)
-        self.assertNotIn("command = build_direct_game_command(runtime, host, port, self._nickname)", source)
-        self.assertNotIn("build_direct_launcher_command(", source)
-        self.assertNotIn("direct_launcher_path()", source)
+        self.assertNotIn("connect_via_browser_ui(browser, host, port, self._nickname)", source)
+        self.assertNotIn("find_client(root, DEFAULT_CLIENT_EXECUTABLE)", source)
 
 
 if __name__ == "__main__":
