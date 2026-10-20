@@ -50,7 +50,7 @@ CLIENT_FILES_MANIFEST_URL = ""
 ZIP_SIZE = 0
 SERVER_HOST = "188.127.241.8"
 SERVER_PORT = 1130
-DEFAULT_LAUNCH_MODE = "browser-ui"
+DEFAULT_LAUNCH_MODE = "direct"
 DEFAULT_CLIENT_EXECUTABLE = "multiplayer_c/multiplayer_browser_cr.exe"
 DIRECT_LAUNCHER_NAME = "LEDERG-DirectLaunch.exe"
 
@@ -808,8 +808,7 @@ def fetch_release_manifest(fetcher=None) -> dict:
     manifest_mode = str(payload.get("launch_mode", DEFAULT_LAUNCH_MODE)).strip().lower()
     if manifest_mode not in {"direct", "samp-cli", "browser", "browser-ui"}:
         raise ValueError("Неизвестный launch_mode в манифесте.")
-    # Always use the actual multiplayer browser bundled in multiplayer_c.
-    # A stale public manifest must not switch this build to direct runtime launch.
+    # A stale public manifest must not switch the client back to browser-driven launch.
     mode = DEFAULT_LAUNCH_MODE
     payload.update({
         "version": version,
@@ -996,6 +995,24 @@ def build_direct_launcher_command(
         "--nickname", nick,
     ]
 
+
+
+def spawn_direct_launcher(command: list[str], game_root: Path) -> subprocess.Popen:
+    """Run the bundled direct-connect helper with no visible console window."""
+    options = {
+        "cwd": str(Path(game_root).resolve()),
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+    if os.name == "nt":
+        startup_info = subprocess.STARTUPINFO()
+        startup_info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup_info.wShowWindow = subprocess.SW_HIDE
+        options["startupinfo"] = startup_info
+        options["creationflags"] = subprocess.CREATE_NO_WINDOW
+    return subprocess.Popen(command, **options)
 
 
 def find_direct_game_client(root: Path) -> Path | None:
@@ -2707,32 +2724,28 @@ class LedgerLauncher(tk.Tk):
             root = game_root_for(client)
             launch_mode = getattr(self, "launch_mode", DEFAULT_LAUNCH_MODE)
             if launch_mode == "direct":
-                game_client = find_direct_game_client(root)
-                if not game_client:
+                helper = direct_launcher_path().resolve()
+                if not helper.is_file():
                     raise FileNotFoundError(
-                        "Не найден исполняемый модуль CR:MP: "
-                        "multiplayer_c/grand_theft_auto_san_andreas.dll.\n\n"
-                        "Открой «Переустановить / восстановить клиент» и проверь файлы игры. "
-                        "Браузер серверов не будет запускаться как запасной вариант."
+                        "В сборке отсутствует LEDERG-DirectLaunch.exe. "
+                        "Скачай последнюю версию лаунчера и запусти её повторно."
                     )
-                command = build_direct_game_command(
-                    game_client, self.server_host, self.server_port, nickname
+                command = build_direct_launcher_command(
+                    helper, root, self.server_host, self.server_port, nickname
                 )
                 write_launcher_log(
-                    f"Starting native CR:MP runtime; executable={game_client}; "
-                    f"cwd={root}; endpoint={self.server_host}:{self.server_port}; "
-                    f"nickname={nickname}"
+                    f"Starting hidden direct-connect helper; helper={helper}; "
+                    f"game={root / 'gta_sa.exe'}; dll={root / 'multiplayer_c' / 'san_andreas_multiplayer.dll'}; "
+                    f"cwd={root}; endpoint={self.server_host}:{self.server_port}; nickname={nickname}"
                 )
                 self.status_text = (
-                    f"ПОДКЛЮЧАЮ К {self.server_host}:{self.server_port} — ПРЯМОЙ ЗАПУСК"
+                    f"ПОДКЛЮЧАЮ К {self.server_host}:{self.server_port} — БЕЗ БРАУЗЕРА"
                 )
                 self.draw()
-                self.game_process = subprocess.Popen(
-                    command, cwd=str(root), stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True,
-                )
+                self.game_process = spawn_direct_launcher(command, root)
                 write_launcher_log(
-                    f"Native CR:MP process started; pid={self.game_process.pid}"
+                    f"Hidden direct-connect helper started; pid={self.game_process.pid}; "
+                    f"endpoint={self.server_host}:{self.server_port}"
                 )
             elif launch_mode == "browser-ui":
                 self.status_text = f"ОТКРЫВАЮ CR:MP — {self.server_host}:{self.server_port}"

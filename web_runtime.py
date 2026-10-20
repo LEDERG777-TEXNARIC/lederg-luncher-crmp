@@ -30,7 +30,9 @@ from launcher import (
     ZIP_URL,
     CLIENT_INTEGRITY_FILENAME,
     ENB_DISABLED_BACKUP,
-    build_direct_game_command,
+    build_direct_launcher_command,
+    direct_launcher_path,
+    spawn_direct_launcher,
     connect_via_browser_ui,
     download_archive,
     download_client_folder,
@@ -1181,79 +1183,74 @@ class LauncherApi:
                 ),
             }
 
-        browser = find_client(root, DEFAULT_CLIENT_EXECUTABLE)
-        if not browser or browser.name.casefold() != "multiplayer_browser_cr.exe":
-            message = (
-                "Не найден обязательный браузер CR:MP: "
-                "multiplayer_c/multiplayer_browser_cr.exe. "
-                "Восстанови клиент из официального ZIP."
-            )
-            with self._lock:
-                self._phase = "error"
-                self._error = message
-                self._status = message
-            write_launcher_log(f"Cannot launch CR:MP browser: root={root}; candidate={browser!r}")
-            return {"ok": False, "message": message}
-
         try:
             host, port = parse_server_address(endpoint)
-            browser = browser.resolve()
-            working_directory = game_root_for(browser)
-            try:
-                browser_stat = browser.stat()
-                browser_details = (
-                    f"size={browser_stat.st_size}; "
-                    f"modified={time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(browser_stat.st_mtime))}"
+            helper = direct_launcher_path().resolve()
+            if not helper.is_file():
+                raise FileNotFoundError(
+                    "Не найден встроенный помощник LEDERG-DirectLaunch.exe. "
+                    "Обнови или переустанови сам лаунчер."
                 )
-            except OSError as stat_error:
-                browser_details = f"stat_error={stat_error!r}"
-            write_launcher_log(
-                f"Official CR:MP browser launch: executable={browser}; {browser_details}; "
-                f"cwd={working_directory}; endpoint={host}:{port}; nickname={self._nickname}"
-            )
 
+            command = build_direct_launcher_command(
+                helper, root, host, port, self._nickname
+            )
+            game = Path(command[command.index("--game") + 1])
+            multiplayer_dll = Path(command[command.index("--dll") + 1])
+            try:
+                helper_stat = helper.stat()
+                helper_details = f"size={helper_stat.st_size}; mtime={helper_stat.st_mtime_ns}"
+            except OSError as stat_error:
+                helper_details = f"stat_error={stat_error!r}"
+
+            write_launcher_log(
+                f"Direct-connect launch requested: helper={helper}; {helper_details}; "
+                f"game={game}; dll={multiplayer_dll}; cwd={root}; "
+                f"endpoint={host}:{port}; nickname={self._nickname}"
+            )
             launch_started_at = time.time()
-            process = connect_via_browser_ui(browser, host, port, self._nickname)
+            process = spawn_direct_launcher(command, root)
             if process is None:
-                raise RuntimeError("Браузер CR:MP не вернул дескриптор процесса.")
+                raise RuntimeError("Помощник прямого подключения не вернул дескриптор процесса.")
+
             with self._lock:
                 self._process = process
                 self._status = (
-                    f"Браузер CR:MP запущен; запрос подключения отправлен на {host}:{port}. "
-                    f"PID {process.pid}."
+                    f"Запускаю игру без браузера. Сервер: {host}:{port}. PID помощника {process.pid}."
                 )
                 self._phase = "ready"
                 self._error = ""
                 self._progress = 100.0
-                self._progress_label = "БРАУЗЕР CR:MP ЗАПУЩЕН"
+                self._progress_label = "ПРЯМОЕ ПОДКЛЮЧЕНИЕ · CMD СКРЫТ"
             write_launcher_log(
-                f"Official CR:MP browser process started: pid={process.pid}; "
-                f"endpoint={host}:{port}; command={process.args!r}"
+                f"Direct-connect helper started: pid={process.pid}; "
+                f"endpoint={host}:{port}; command={command!r}; browser_not_started=true"
             )
             self._start_xpanel_hotkey(process, root)
             threading.Thread(
                 target=self._monitor_process,
                 args=(process, launch_started_at),
                 daemon=True,
-                name="LEDERG-browser-process-monitor",
+                name="LEDERG-direct-game-process-monitor",
             ).start()
             return {
                 "ok": True,
                 "message": (
-                    f"Запускаю multiplayer_browser_cr.exe и передаю подключение к {host}:{port}."
+                    f"Запускаю GTA: San Andreas напрямую, без окна браузера и консоли. "
+                    f"Адрес сервера: {host}:{port}."
                 ),
             }
         except Exception as exc:
             write_launcher_log(
-                f"ERROR launching through CR:MP browser: {traceback.format_exc()}"
+                f"ERROR launching direct CR:MP session: {traceback.format_exc()}"
             )
             with self._lock:
                 self._phase = "error"
                 self._error = str(exc)
-                self._status = "Ошибка запуска браузера CR:MP."
+                self._status = "Ошибка прямого запуска CR:MP."
             return {
                 "ok": False,
-                "message": f"Не удалось запустить/подключить через браузер CR:MP: {exc}",
+                "message": f"Не удалось напрямую запустить/подключить CR:MP: {exc}",
             }
 
     def _start_xpanel_hotkey(self, process: subprocess.Popen, root: Path) -> None:
