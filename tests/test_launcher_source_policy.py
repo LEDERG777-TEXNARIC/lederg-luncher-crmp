@@ -8,7 +8,7 @@ import launcher
 
 
 class LauncherSourcePolicyTests(unittest.TestCase):
-    def test_client_archive_is_pinned_to_the_requested_google_drive_file(self):
+    def test_client_release_prefers_checksum_manifest_and_keeps_archive_as_fallback(self):
         payload = {
             "schema": 1,
             "version": "stale-config",
@@ -27,7 +27,7 @@ class LauncherSourcePolicyTests(unittest.TestCase):
         manifest = launcher.fetch_release_manifest(fetcher=lambda *args, **kwargs: response)
 
         self.assertEqual(manifest["archive_url"], launcher.DRIVE_DOWNLOAD_URL)
-        self.assertEqual(manifest["files_manifest_url"], "")
+        self.assertEqual(manifest["files_manifest_url"], "https://oddly-hopeful-rudd.cloudpub.ru/client-manifest.json")
         self.assertEqual(manifest["archive_size"], 0)
         self.assertEqual(manifest["sha256"], "")
 

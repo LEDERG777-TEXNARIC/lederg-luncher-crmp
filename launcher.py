@@ -46,7 +46,7 @@ DRIVE_DOWNLOAD_URL = (
 # The full game archive is deliberately pinned to this single Google Drive file.
 # Per-file/Cloudpub manifests are disabled so no game payload comes from another host.
 ZIP_URL = DRIVE_DOWNLOAD_URL
-CLIENT_FILES_MANIFEST_URL = ""
+CLIENT_FILES_MANIFEST_URL = "https://oddly-hopeful-rudd.cloudpub.ru/client-manifest.json"
 ZIP_SIZE = 0
 SERVER_HOST = "188.127.241.8"
 SERVER_PORT = 1130
@@ -782,6 +782,9 @@ def fetch_release_manifest(fetcher=None) -> dict:
         raise ValueError("URL архива должен использовать HTTP или HTTPS.")
     elif parsed.scheme.lower() == "http" and not (parsed.hostname or "").lower().endswith(".cloudpub.ru"):
         raise ValueError("Незашифрованный HTTP разрешён только для домена Cloudpub.")
+    if not files_manifest_url:
+        # Keep older client.json files compatible with the current manifest-first updater.
+        files_manifest_url = CLIENT_FILES_MANIFEST_URL
     if files_manifest_url:
         files_parsed = urlparse(files_manifest_url)
         if not files_parsed.scheme:
@@ -809,11 +812,14 @@ def fetch_release_manifest(fetcher=None) -> dict:
     if manifest_mode not in {"direct", "samp-cli", "browser", "browser-ui"}:
         raise ValueError("Неизвестный launch_mode в манифесте.")
     # A stale public manifest must not switch the client back to browser-driven launch.
+    # Keep archive metadata as a compatibility fallback; prefer the per-file manifest.
     mode = DEFAULT_LAUNCH_MODE
     payload.update({
         "version": version,
+        # Keep the archive fallback pinned to the known Drive client; its metadata
+        # must not be inherited from an arbitrary/old public manifest.
         "archive_url": DRIVE_DOWNLOAD_URL,
-        "files_manifest_url": "",
+        "files_manifest_url": files_manifest_url,
         "archive_size": 0,
         "sha256": "",
         "client_executable": executable.replace("\\", "/"),

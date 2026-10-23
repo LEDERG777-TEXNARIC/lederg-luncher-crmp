@@ -161,12 +161,14 @@ class LauncherTests(unittest.TestCase):
             return FakeResponse(payload=payload)
         release = fetch_release_manifest(fetcher=fake_get)
         self.assertEqual(release["version"], "1.0.1")
+        from launcher import CLIENT_FILES_MANIFEST_URL
+
         from launcher import DRIVE_DOWNLOAD_URL
 
         self.assertEqual(release["archive_url"], DRIVE_DOWNLOAD_URL)
         self.assertEqual(release["sha256"], "")
         self.assertEqual(release["archive_size"], 0)
-        self.assertEqual(release["files_manifest_url"], "")
+        self.assertEqual(release["files_manifest_url"], CLIENT_FILES_MANIFEST_URL)
 
     def test_legacy_browser_is_launched_without_unsupported_cli_arguments(self):
         exe = Path("multiplayer_c/multiplayer_browser_cr.exe")
