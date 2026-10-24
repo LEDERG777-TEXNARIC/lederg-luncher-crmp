@@ -27,14 +27,11 @@ from launcher import (
     SERVER_HOST,
     SERVER_PORT,
     SERVER_IP_URL,
-    ZIP_URL,
-    CLIENT_INTEGRITY_FILENAME,
     ENB_DISABLED_BACKUP,
     build_direct_launcher_command,
     direct_launcher_path,
     spawn_direct_launcher,
     connect_via_browser_ui,
-    download_archive,
     download_client_folder,
     fetch_release_manifest,
     find_client,
@@ -42,8 +39,6 @@ from launcher import (
     game_root_for,
     load_server_address,
     parse_server_address,
-    safe_extract_zip,
-    finalize_client_integrity_manifest,
     inspect_client_installation,
     extract_faulting_module,
     extract_faulting_module_path,
@@ -69,8 +64,8 @@ AUTO_REPAIR_FAILURE_RETRY_SECONDS = 15 * 60
 
 _REPAIR_PHASE_LABELS = {
     "manifest": "ПОДГОТОВКА ВОССТАНОВЛЕНИЯ",
-    "download": "СКАЧИВАНИЕ АРХИВА",
-    "extract": "РАСПАКОВКА АРХИВА",
+    "download": "СКАЧИВАНИЕ ФАЙЛОВ",
+    "extract": "ПРОВЕРКА ФАЙЛОВ",
     "integrity": "ПРОВЕРКА ЦЕЛОСТНОСТИ",
     "schedule": "ЗАПУСК АВТОВОССТАНОВЛЕНИЯ",
     "repair": "АВТОВОССТАНОВЛЕНИЕ",
@@ -658,7 +653,7 @@ class LauncherApi:
         return None
 
     def _auto_repair_allowed(self, root: Path, reason: str) -> bool:
-        """Limit crash-triggered full archive repairs to one attempt per install/day."""
+        """Limit crash-triggered manifest-based file repairs to one attempt per install/day."""
         resolved = str(Path(root).resolve())
         now = time.time()
         with self._lock:
@@ -958,7 +953,7 @@ class LauncherApi:
                 if report.get("integrity_mode") == "structural-only":
                     reason = (
                         "Legacy client has no trusted integrity inventory; "
-                        "establish a SHA-256 baseline from the pinned official archive"
+                        "establish a SHA-256 baseline from the published client manifest"
                     )
                     write_launcher_log(
                         f"Legacy client needs a trusted integrity baseline; starting one-time repair: "
@@ -1422,7 +1417,7 @@ class LauncherApi:
         return self._begin_install(reinstall=False)
 
     def reinstall_client(self) -> dict:
-        """Re-download the official Drive archive and restore files over the installation."""
+        """Compare the published file manifest and restore missing or changed files."""
         return self._begin_install(reinstall=True)
 
     def _begin_install(
@@ -1473,7 +1468,7 @@ class LauncherApi:
             if phase == "download":
                 self._progress_label = "ЗАГРУЗКА ФАЙЛОВ"
             elif phase == "extract":
-                self._progress_label = "РАСПАКОВКА АРХИВА"
+                self._progress_label = "ПРОВЕРКА ФАЙЛОВ"
             else:
                 self._progress_label = "ПРОВЕРКА ФАЙЛОВ"
 
@@ -1483,21 +1478,19 @@ class LauncherApi:
         reinstall: bool = False,
         auto_repair_root: Path | None = None,
     ) -> None:
-        archive: Path | None = None
         repair_succeeded = False
         failure_detail = ""
         failure_phase = ""
-        integrity_inventory = DATA_HOME / "pending-client-integrity.json"
         try:
             with self._lock:
                 self._status = (
-                    "Загружаю архив заново для восстановления клиента…"
+                    "Сверяю клиент и восстанавливаю изменённые файлы…"
                     if reinstall else "Обновляю конфигурацию сервера…"
                 )
                 self._phase = "manifest"
             if reinstall:
                 write_launcher_log(
-                    f"Reinstall mode active: existing game files will be overwritten from Drive; root={selected}"
+                    f"Manifest repair mode active: only missing/changed client files will be restored; root={selected}"
                 )
             try:
                 release = fetch_release_manifest()
@@ -1505,110 +1498,30 @@ class LauncherApi:
                 write_launcher_log(f"Release manifest unavailable; using last-resort client URLs: {exc!r}")
                 release = {
                     "version": "fallback",
-                    "archive_url": ZIP_URL,
                     "files_manifest_url": CLIENT_FILES_MANIFEST_URL,
-                    "archive_size": 0,
-                    "sha256": "",
                     "client_executable": DEFAULT_CLIENT_EXECUTABLE,
                     "launch_mode": DEFAULT_LAUNCH_MODE,
                 }
 
-            # The full client payload is intentionally sourced only from the
-            # pinned Google Drive archive. Do not contact Cloudpub or a per-file manifest.
-            manifest_url = ""
-            manifest = None
+            # Client payloads use the live file manifest, not Drive's confirmation HTML.
+            manifest_url = release.get("files_manifest_url") or CLIENT_FILES_MANIFEST_URL
             write_launcher_log(
-                f"Drive-only client source selected: {ZIP_URL}; "
-                f"release metadata version={release.get('version', 'unknown')}."
+                f"Client file manifest selected: {manifest_url}; "
+                f"release version={release.get('version', 'unknown')}."
             )
-            if manifest is None:
-                install_name = "GTA Criminal Russia"
-                selected_is_game_root = (
-                    (selected / "gta_sa.exe").is_file()
-                    or selected.name.casefold() == install_name.casefold()
-                    or any((selected / marker).exists() for marker in ("multiplayer_c", "models", "data"))
-                )
-                destination = selected.parent if selected_is_game_root else selected
-                archive_url = release.get("archive_url") or ZIP_URL
-                with self._lock:
-                    self._status = "Скачиваю игровой клиент из Google Drive…"
-                    self._phase = "download"
-                    self._progress = 0.0
-                    self._progress_label = "ЗАГРУЗКА АРХИВА"
-                archive = download_archive(
-                    destination,
-                    progress=self._set_progress,
-                    url=archive_url,
-                    expected_sha256=release.get("sha256", ""),
-                    expected_size=int(release.get("archive_size", 0) or 0),
-                )
-                integrity_inventory.unlink(missing_ok=True)
-                count = safe_extract_zip(
-                    archive,
-                    destination,
-                    progress=lambda done, total, name: self._set_progress("extract", done, total, name),
-                    integrity_manifest_path=integrity_inventory,
-                )
-                client = find_client(destination, release.get("client_executable"))
-                if not client:
-                    raise RuntimeError(
-                        "Архив распакован, но браузер CR:MP не найден. "
-                        "Проверь, что ZIP содержит папку multiplayer_c и игровой клиент."
-                    )
-                root = game_root_for(client)
-                runtime = find_direct_game_client(root)
-                if not (root / "gta_sa.exe").is_file() or not runtime:
-                    raise RuntimeError(
-                        "В архиве не найден игровой runtime grand_theft_auto_san_andreas.dll. "
-                        "Нужен полный CR:MP-клиент, не только браузер серверов."
-                    )
-                prior_enb_backups = list(root.glob("d3d9.dll.lederg-disabled*.bak"))
-                if prior_enb_backups and (root / "d3d9.dll").is_file():
-                    restored_proxy_backup = quarantine_faulting_optional_module(
-                        root, "d3d9.dll", str(root / "d3d9.dll")
-                    )
-                    if restored_proxy_backup is not None:
-                        write_launcher_log(
-                            "Kept previously confirmed ENB proxy disabled after archive repair; "
-                            f"new backup={restored_proxy_backup}"
-                        )
-                finalize_client_integrity_manifest(root, destination, integrity_inventory)
-                health = inspect_client_installation(root, full_scan=False)
-                if not health["healthy"]:
-                    raise RuntimeError(
-                        "После распаковки автопроверка обнаружила проблемы: "
-                        + "; ".join(health["issues"][:8])
-                    )
-                try:
-                    archive.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                integrity_inventory.unlink(missing_ok=True)
-                self._write_install_path(root)
-                with self._lock:
-                    self._game_root = root
-                    self._install_path = root
-                    self._client_health = health
-                    self._progress = 100.0
-                    self._progress_label = "ПРОВЕРКА ПРОЙДЕНА"
-                    self._status = (
-                        f"Клиент установлен и проверен ({count} файлов). "
-                        f"{health['summary']}"
-                    )
-                    self._phase = "ready"
-                    self._error = ""
-                write_launcher_log(
-                    f"Google Drive client installation completed and verified: "
-                    f"root={root}; files={count}; health={health!r}"
-                )
-                repair_succeeded = True
-                return
-
+            with self._lock:
+                self._status = "Проверяю актуальный манифест клиента…"
+                self._phase = "manifest"
+            manifest = fetch_files_manifest(manifest_url, http=HTTP)
+            if not manifest.get("files"):
+                raise RuntimeError("Манифест клиента пуст: файлов для проверки нет.")
             install_name = str(manifest.get("install_root", "GTA Criminal Russia"))
-            if (selected / "gta_sa.exe").is_file() or selected.name.casefold() == install_name.casefold():
-                destination = selected.parent
-            else:
-                destination = selected
+            selected_is_game_root = (
+                (selected / "gta_sa.exe").is_file()
+                or selected.name.casefold() == install_name.casefold()
+                or any((selected / marker).exists() for marker in ("multiplayer_c", "models", "data"))
+            )
+            destination = selected.parent if selected_is_game_root else selected
             with self._lock:
                 self._status = "Скачиваю и проверяю игровые файлы…"
                 self._phase = "download"
@@ -1662,11 +1575,6 @@ class LauncherApi:
                 self._error = f"Восстановление не удалось: {diagnosis['problem']}"
                 self._status = self._error
         finally:
-            try:
-                integrity_inventory.unlink(missing_ok=True)
-                integrity_inventory.with_name(integrity_inventory.name + ".tmp").unlink(missing_ok=True)
-            except OSError:
-                pass
             if auto_repair_root is not None:
                 with self._lock:
                     detail = failure_detail or self._error or self._status

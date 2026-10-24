@@ -10,6 +10,7 @@ datas = [
     (str(root / "launcher.py"), "runtime"),
     (str(root / "web_runtime.py"), "runtime"),
     (str(root / "web" / "index.html"), "runtime/web"),
+    (str(root / "LEDERG-CRMP-Avatar.png"), "."),
     (str(root / "LEDERG-DirectLaunch.exe"), "."),
 ]
 binaries = []
